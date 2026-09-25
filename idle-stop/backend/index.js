@@ -868,6 +868,9 @@ function onConsoleOutput(ctx, serverId, dataJson) {
 
 /** Nuclear Option console join gives a SteamID; welcome via send-chat-message. */
 async function welcomeNuclearBySteamId(ctx, serverId, steamid, settings) {
+  // The join line is printed while the client is still loading, so wait until
+  // they are actually in-game before broadcasting, or the chat is missed.
+  await new Promise((resolve) => setTimeout(resolve, 12000));
   const server = serverCache.get(serverId);
   if (!server || server.status !== 'running') return;
   let name = steamid;
