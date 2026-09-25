@@ -259,6 +259,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
       row('Status', s.status || '—'),
       row('Managed', s.managed ? 'yes' : 'no'),
       row('Preset', `${settings().preset || '—'} (${settings().playerSource || '—'})`),
+      row('RCON password', settings().rconPasswordSet ? 'set' : 'not set'),
       row('Players', st.lastCount == null ? '—' : `${st.lastCount}${st.lastSource ? ` (${st.lastSource})` : ''}`),
       row('Empty since', fmt(st.idleSince)),
       row('Last stop', fmt(st.lastStopAt)),
@@ -435,7 +436,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
     const rconHost = inputEl({ type: 'text', value: st.rconHost || '' });
     const rconPort = inputEl({ type: 'number', min: '0', value: String(st.rconPort ?? 0) });
     const rconPortOffset = inputEl({ type: 'number', min: '0', value: String(st.rconPortOffset ?? 0) });
-    const rconPassword = inputEl({ type: 'password', placeholder: st.rconPasswordSet ? '(unchanged)' : '' });
+    const rconPassword = inputEl({ type: 'password', placeholder: st.rconPasswordSet ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (stored \u2014 type to replace)' : 'not set' });
     const welcomeEnabled = inputEl({ type: 'checkbox' }) as HTMLInputElement;
     welcomeEnabled.checked = Boolean(st.welcomeEnabled);
     const welcomeMessage = inputEl({ type: 'text', value: st.welcomeMessage || 'Welcome, {player}!' });
@@ -523,7 +524,11 @@ function mountServer(root: HTMLElement, serverId: string): void {
       }
     }, 'muted');
 
-    settingsHost.appendChild(card('Settings', [grid, el('div', { className: 'flex items-center gap-3 pt-4' }, [save, broadcast, status])]));
+    settingsHost.appendChild(card('Settings', [
+      grid,
+      el('p', { className: 'text-xs text-gray-400 pt-3', text: 'The RCON password is never shown once saved. Type a new value to replace it, or leave it blank to keep the current one.' }),
+      el('div', { className: 'flex items-center gap-3 pt-4' }, [save, broadcast, status]),
+    ]));
   }
 
   // ------------------------------------------------------------ nuclear ---
@@ -580,7 +585,7 @@ function IdleStopTab(props: { serverId?: string }): React.ReactElement {
 export default {
   manifest: {
     name: 'idle-stop',
-    version: '1.5.2',
+    version: '1.5.3',
     displayName: 'Idle Stop & Player Admin',
     description: 'Auto-stop empty servers, plus player list, kick, ban, ban list and welcome messages.',
     author: 'SpiritNetworks',

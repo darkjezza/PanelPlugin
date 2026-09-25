@@ -47,7 +47,9 @@ export const PRESETS = {
     banListCommand: 'banlist',
     stopMethod: 'agent',
     stopCommand: '',
-    rconPortOffset: 2,
+    // ValheimRcon 1.6.2 defaults to a fixed port 2458 (not game port + 2).
+    rconPortOffset: 0,
+    rconDefaultPort: 2458,
     rosterJoinRegex: 'Got connection SteamID (\\d+)',
     rosterLeaveRegex: 'Closing socket (\\d+)',
   },
@@ -141,6 +143,7 @@ export function resolveSettings(global, server, per = {}) {
     rconPort: Math.max(0, toNumber(pick('rconPort', 0), 0)),
     // 0 means "no offset", so it must not shadow the preset's value.
     rconPortOffset: Math.max(0, toNumber(firstSet(per.rconPortOffset || undefined, global.rconPortOffset || undefined, preset.rconPortOffset), 0)),
+    rconDefaultPort: Math.max(0, toNumber(firstSet(per.rconDefaultPort || undefined, preset.rconDefaultPort), 0)),
     rconPassword: String(firstSet(per.rconPassword, global.rconPassword) || ''),
     welcomeEnabled: toBool(pick('welcomeEnabled', false), false),
     welcomeMessage: String(pick('welcomeMessage', 'Welcome, {player}!') || ''),

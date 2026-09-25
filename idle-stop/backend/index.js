@@ -67,6 +67,7 @@ const ALLOWED_OVERRIDES = new Set([
   'rconHost',
   'rconPort',
   'rconPortOffset',
+  'rconDefaultPort',
   'rconPassword',
   'welcomeEnabled',
   'welcomeMessage',
@@ -414,7 +415,7 @@ async function resolveRcon(ctx, server, settings) {
   }
 
   const offset = Number(settings.rconPortOffset) || 0;
-  const port = configuredPort || discovered.port || Number(server.primaryPort) + offset || 0;
+  const port = configuredPort || discovered.port || Number(settings.rconDefaultPort) || Number(server.primaryPort) + offset || 0;
   if (!host || !port) {
     throw new Error('RCON needs a reachable host and port (set rconHost/rconPort; Valheim RCON default is game port + 2)');
   }
