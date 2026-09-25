@@ -129,6 +129,12 @@ const rosterCache = new Map();
 const rosterSeen = new Set();
 // One in-flight console request/response capture per server (e.g. `banned`).
 const consoleCaptures = new Map();
+// Live diagnostics surfaced through GET /servers/:id (in-memory only).
+const runtimeInfo = new Map();
+
+function touchRuntime(serverId, patch) {
+  runtimeInfo.set(serverId, { ...(runtimeInfo.get(serverId) || {}), ...patch });
+}
 
 const WELCOME_DEDUP_MS = 5 * 60 * 1000;
 
@@ -632,8 +638,10 @@ async function welcomeFromConsole(ctx, serverId, name, settings) {
     await sendGameCommand(ctx, server, settings, command);
     welcomed[String(name).toLowerCase()] = Date.now();
     await writeState(ctx, serverId, { welcomed: pruneWelcomed(welcomed), lastWelcomeAt: Date.now() });
+    touchRuntime(serverId, { lastWelcomePlayer: name, lastWelcomeError: null });
     emit(ctx, 'idle-stop:welcomed', { serverId, player: name });
   } catch (err) {
+    touchRuntime(serverId, { lastWelcomeError: err?.message || String(err) });
     ctx.logger.warn({ err: err?.message, serverId, player: name }, 'idle-stop console welcome failed');
   }
 }
@@ -650,6 +658,7 @@ function onConsoleOutput(ctx, serverId, dataJson) {
   }
   const text = payload && typeof payload.data === 'string' ? payload.data : '';
   if (!text) return;
+  touchRuntime(serverId, { lastConsoleAt: Date.now() });
   const lines = text.split(/\r?\n/).filter(Boolean);
 
   const capture = consoleCaptures.get(serverId);
@@ -674,6 +683,7 @@ function onConsoleOutput(ctx, serverId, dataJson) {
     const value = String(match[1]).trim();
     if (!value || seen.has(value)) continue;
     seen.add(value);
+    touchRuntime(serverId, { lastJoinAt: Date.now(), lastJoinValue: value });
     if (isValheim) {
       welcomeValheimBySteamId(ctx, serverId, value, settings).catch(() => {});
     } else {
@@ -700,8 +710,13 @@ async function welcomeValheimBySteamId(ctx, serverId, steamid, settings) {
     }
     if (!name) await new Promise((resolve) => setTimeout(resolve, 1500));
   }
-  if (name) await welcomeFromConsole(ctx, serverId, name, settings);
-  else ctx.logger.debug({ serverId, steamid }, 'idle-stop Valheim join name unresolved; poll fallback will handle it');
+  if (name) {
+    touchRuntime(serverId, { lastResolvedName: name, lastResolveError: null });
+    await welcomeFromConsole(ctx, serverId, name, settings);
+  } else {
+    touchRuntime(serverId, { lastResolveError: `name unresolved for ${steamid}` });
+    ctx.logger.debug({ serverId, steamid }, 'idle-stop Valheim join name unresolved; poll fallback will handle it');
+  }
 }
 
 function ensureConsoleSub(ctx, serverId) {
@@ -779,6 +794,7 @@ async function updateRosterFromLines(ctx, serverId, settings, lines) {
   const joinRe = compile(settings.rosterJoinRegex);
   const leaveRe = compile(settings.rosterLeaveRegex);
   let changed = false;
+  const left = [];
   for (const line of lines) {
     if (joinRe) {
       const match = line.match(joinRe);
@@ -792,11 +808,20 @@ async function updateRosterFromLines(ctx, serverId, settings, lines) {
       const match = line.match(leaveRe);
       if (match && match[1] && map.has(match[1])) {
         map.delete(match[1]);
+        left.push(match[1]);
         changed = true;
       }
     }
   }
   if (changed) await persistRoster(ctx, serverId);
+  // Forget leavers so the poll path welcomes them again when they rejoin,
+  // even if they reconnect between polls.
+  if (left.length) {
+    const state = await readState(ctx, serverId);
+    const known = Array.isArray(state.knownPlayers) ? state.knownPlayers : [];
+    const filtered = known.filter((key) => !left.includes(key));
+    if (filtered.length !== known.length) await writeState(ctx, serverId, { knownPlayers: filtered });
+  }
 }
 
 /** Collect console lines for a short window after a command (e.g. `banned`). */
@@ -1093,6 +1118,7 @@ export default {
             override: { ...per, rconPassword: undefined, rconPasswordSet: Boolean(per.rconPassword) },
             settings: redactSettings(resolveSettings(global, server, per)),
             state,
+            runtime: runtimeInfo.get(server.id) || null,
           },
         };
       }),
