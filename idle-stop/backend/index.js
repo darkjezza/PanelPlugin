@@ -531,6 +531,25 @@ async function countPlayers(ctx, server, settings) {
 async function probePlayers(ctx, server, settings) {
   const style = styleFor(settings.preset);
 
+  // If the operator forced A2S, never touch RCON for the player list.
+  if (settings.playerSource === 'a2s') {
+    if (style === 'source') {
+      try {
+        const { host, port } = resolveEndpoint(settings.queryHost, settings.queryPort, server);
+        if (!host || !port) throw new Error('A2S query needs a reachable host and port (set queryHost/queryPort)');
+        const players = (await a2sPlayers({ host, port }))
+          .map((p) => ({ name: String(p.name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim() }))
+          .filter((p) => p.name);
+        return { mode: 'list', players, count: players.length, source: 'a2s', output: null, listError: null };
+      } catch {
+        const res = await countPlayers(ctx, server, settings);
+        return { mode: 'count', players: [], count: res.count, source: res.source, output: res.output || null, listError: null };
+      }
+    }
+    const res = await countPlayers(ctx, server, settings);
+    return { mode: 'count', players: [], count: res.count, source: res.source, output: res.output || null, listError: null };
+  }
+
   if (style === 'valheim') {
     // Prefer the ValheimRcon mod's RCON player list (names + SteamIDs).
     try {
