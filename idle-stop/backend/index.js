@@ -78,18 +78,35 @@ const ALLOWED_OVERRIDES = new Set([
   'note',
 ]);
 
+// ValheimRcon has shipped under both config file names.
+const VALHEIM_RCON_CFGS = [
+  'BepInEx/config/rg.tristan.rcon.cfg',
+  'BepInEx/config/org.tristan.rcon.cfg',
+];
 const RC_CONFIG_PATHS = [
   'server.properties',
   'server.cfg',
   'cstrike/server.cfg',
   'csgo/cfg/server.cfg',
   'tf/cfg/server.cfg',
-  'BepInEx/config/org.tristan.rcon.cfg', // ValheimRcon mod
+  ...VALHEIM_RCON_CFGS,
 ];
 // File-tunnel requests can take up to 60s each; bound discovery hard and cache
 // the result so a user-facing request never hangs into a proxy timeout.
 const RC_DISCOVERY_TTL_MS = 5 * 60 * 1000;
-const RC_DISCOVERY_TIMEOUT_MS = 5000;
+// Recheck quickly after a miss so a fixed config is picked up within a minute.
+const RC_DISCOVERY_MISS_TTL_MS = 60 * 1000;
+const RC_DISCOVERY_TIMEOUT_MS = 8000;
+
+const isValheimRconCfg = (path) => VALHEIM_RCON_CFGS.includes(path);
+
+/** Config files most likely to hold the RCON password, in priority order. */
+function configPathsFor(preset) {
+  const rest = RC_CONFIG_PATHS.filter((p) => !isValheimRconCfg(p));
+  if (preset === 'valheim') return [...VALHEIM_RCON_CFGS, ...rest];
+  if (preset === 'minecraft-java') return ['server.properties', ...rest.filter((p) => p !== 'server.properties')];
+  return [...rest];
+}
 const PROBE_TIMEOUT_MS = 15000;
 const rconPasswordCache = new Map();
 const MAX_WELCOMES_PER_TICK = 20;
@@ -287,22 +304,15 @@ function parsePropertiesPassword(text) {
   return null;
 }
 
-/** ValheimRcon BepInEx config: [1. Rcon] Port / Password. */
+/** ValheimRcon BepInEx config: a single Port/Password pair in any section. */
 function parseBepInExRconConfig(text) {
-  let section = '';
   let password = null;
   let port = null;
   for (const rawLine of String(text || '').split('\n')) {
     const line = rawLine.trim();
-    const header = line.match(/^\[(.+)\]$/);
-    if (header) {
-      section = header[1];
-      continue;
-    }
-    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+    if (!line || line.startsWith('#') || line.startsWith('//') || line.startsWith('[')) continue;
     const eq = line.indexOf('=');
     if (eq === -1) continue;
-    if (section && !/rcon/i.test(section)) continue;
     const key = line.slice(0, eq).trim().toLowerCase();
     const value = line.slice(eq + 1).trim().replace(/^"(.*)"$/, '$1');
     if (key === 'password' && value) password = value;
@@ -319,42 +329,63 @@ function parseBepInExRconConfig(text) {
  * server's config files. Cached and hard-bounded so it never blocks a request.
  * Returns { password, port }.
  */
-async function discoverRcon(ctx, server) {
+async function discoverRcon(ctx, server, preset) {
   const cached = rconPasswordCache.get(server.id);
-  if (cached && Date.now() - cached.at < RC_DISCOVERY_TTL_MS) return cached.value;
+  if (cached && Date.now() < cached.expiresAt) return cached.value;
   const empty = { password: null, port: null };
   if (!ctx.fileTunnel || typeof ctx.fileTunnel.queueRequest !== 'function') {
-    rconPasswordCache.set(server.id, { value: empty, at: Date.now() });
+    rconPasswordCache.set(server.id, { value: empty, expiresAt: Date.now() + RC_DISCOVERY_MISS_TTL_MS });
     return empty;
   }
 
-  const scan = async () => {
-    const found = { password: null, port: null };
-    for (const path of RC_CONFIG_PATHS) {
-      try {
-        const res = await ctx.fileTunnel.queueRequest(server.nodeId, 'download', server.uuid, path);
-        if (!res?.success || !res.body) continue;
-        const text = Buffer.isBuffer(res.body) ? res.body.toString('utf8') : String(res.body);
-        if (path.endsWith('org.tristan.rcon.cfg')) {
-          const cfg = parseBepInExRconConfig(text);
-          if (cfg.port) found.port = cfg.port;
-          if (cfg.password) {
-            found.password = cfg.password;
-            return found;
-          }
-          continue;
-        }
-        const password = path.endsWith('.properties') ? parsePropertiesPassword(text) : parseServerCfgPassword(text);
-        if (password) {
-          found.password = password;
-          return found;
-        }
-      } catch {
-        /* try the next candidate path */
+  // Ask for every candidate at once and resolve as soon as one yields a
+  // password, so a slow or missing file never blocks the one that matters.
+  const scan = () =>
+    new Promise((resolve) => {
+      const paths = configPathsFor(preset);
+      const found = { password: null, port: null };
+      let pending = paths.length;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        resolve(found);
+      };
+      if (pending === 0) {
+        finish();
+        return;
       }
-    }
-    return found;
-  };
+      for (const path of paths) {
+        (async () => {
+          try {
+            const res = await ctx.fileTunnel.queueRequest(server.nodeId, 'download', server.uuid, path);
+            if (res?.success && res.body) {
+              const text = Buffer.isBuffer(res.body) ? res.body.toString('utf8') : String(res.body);
+              if (isValheimRconCfg(path)) {
+                const cfg = parseBepInExRconConfig(text);
+                if (cfg.port && !found.port) found.port = cfg.port;
+                if (cfg.password && !found.password) {
+                  found.password = cfg.password;
+                  finish();
+                  return;
+                }
+              } else {
+                const password = path.endsWith('.properties') ? parsePropertiesPassword(text) : parseServerCfgPassword(text);
+                if (password && !found.password) {
+                  found.password = password;
+                  finish();
+                  return;
+                }
+              }
+            }
+          } catch {
+            /* ignore this candidate */
+          }
+          pending -= 1;
+          if (pending === 0) finish();
+        })();
+      }
+    });
 
   let value = empty;
   try {
@@ -365,7 +396,8 @@ async function discoverRcon(ctx, server) {
   } catch {
     value = empty;
   }
-  rconPasswordCache.set(server.id, { value, at: Date.now() });
+  const ttl = value.password ? RC_DISCOVERY_TTL_MS : RC_DISCOVERY_MISS_TTL_MS;
+  rconPasswordCache.set(server.id, { value, expiresAt: Date.now() + ttl });
   return value;
 }
 
@@ -377,7 +409,7 @@ async function resolveRcon(ctx, server, settings) {
 
   let discovered = { password: null, port: null };
   if (!password || !configuredPort) {
-    discovered = await discoverRcon(ctx, server);
+    discovered = await discoverRcon(ctx, server, settings.preset);
     if (!password) password = discovered.password || '';
   }
 
@@ -387,7 +419,7 @@ async function resolveRcon(ctx, server, settings) {
     throw new Error('RCON needs a reachable host and port (set rconHost/rconPort; Valheim RCON default is game port + 2)');
   }
   if (!password) {
-    throw new Error('no RCON password configured or found (Valheim: BepInEx/config/org.tristan.rcon.cfg)');
+    throw new Error("no RCON password: set it on this server's Idle Stop tab, or use a non-empty Password in BepInEx/config/<mod>.cfg (Valheim) / server.properties (Minecraft)");
   }
   return { host, port, password };
 }
@@ -1081,6 +1113,65 @@ export default {
         } catch (err) {
           return { success: false, serverId: server.id, error: err?.message || String(err) };
         }
+      }),
+    });
+
+    ctx.registerRoute({
+      method: 'GET',
+      url: '/servers/:id/rcon-config',
+      preHandler: ctx.requirePermission?.('server.read'),
+      handler: readHandler(async (request, reply) => {
+        const server = await findServer(ctx, request.params.id);
+        if (!server) return reply.status(404).send({ success: false, error: 'server not found' });
+        const overrides = await loadOverrides(ctx);
+        const settings = resolveSettings(readGlobalConfig(ctx), server, overrides.get(server.id) || {});
+        const hasTunnel = Boolean(ctx.fileTunnel && typeof ctx.fileTunnel.queueRequest === 'function');
+
+        const check = (path) => {
+          const task = (async () => {
+            try {
+              const res = await ctx.fileTunnel.queueRequest(server.nodeId, 'download', server.uuid, path);
+              if (!res?.success || !res.body) return { path, found: false };
+              const text = Buffer.isBuffer(res.body) ? res.body.toString('utf8') : String(res.body);
+              if (isValheimRconCfg(path)) {
+                const cfg = parseBepInExRconConfig(text);
+                return { path, found: true, passwordFound: Boolean(cfg.password), port: cfg.port ?? null };
+              }
+              const password = path.endsWith('.properties') ? parsePropertiesPassword(text) : parseServerCfgPassword(text);
+              return { path, found: true, passwordFound: Boolean(password) };
+            } catch (err) {
+              return { path, found: false, error: err?.message || String(err) };
+            }
+          })();
+          return Promise.race([
+            task,
+            new Promise((resolve) => setTimeout(() => resolve({ path, found: false, error: 'timeout' }), 6000)),
+          ]);
+        };
+
+        const paths = hasTunnel ? await Promise.all(configPathsFor(settings.preset).map(check)) : [];
+        let rconTest = { ok: false, error: hasTunnel ? null : 'file tunnel unavailable' };
+        try {
+          const command = settings.playerListCommand || 'players';
+          const output = await rcon(ctx, server, settings, command);
+          rconTest = { ok: true, command, output: output.slice(0, 400) };
+        } catch (err) {
+          rconTest = { ok: false, command: settings.playerListCommand || 'players', error: err?.message || String(err) };
+        }
+
+        return {
+          success: true,
+          serverId: server.id,
+          preset: settings.preset,
+          fileTunnel: hasTunnel,
+          passwordConfigured: Boolean(settings.rconPassword),
+          rconPortSetting: settings.rconPort,
+          rconPortOffset: settings.rconPortOffset,
+          primaryPort: server.primaryPort,
+          primaryIp: server.primaryIp,
+          paths,
+          rconTest,
+        };
       }),
     });
 
