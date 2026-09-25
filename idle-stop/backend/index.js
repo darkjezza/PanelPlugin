@@ -969,24 +969,36 @@ async function welcomeNuclearBySteamId(ctx, serverId, steamid, settings) {
 async function welcomeValheimBySteamId(ctx, serverId, steamid, settings) {
   const server = serverCache.get(serverId);
   if (!server || server.status !== 'running') return;
+  // The join line fires on connect, but the character does not spawn for
+  // another ~15-20s (Position is (0 0 0) until then). Wait for a real position
+  // so the welcome is not shown while the player is still loading.
   let name = null;
-  for (let attempt = 0; attempt < 6 && !name; attempt += 1) {
+  let spawned = false;
+  for (let attempt = 0; attempt < 20 && !spawned; attempt += 1) {
     try {
       const output = await rcon(ctx, server, settings, settings.playerListCommand || 'players');
       const found = parsePlayers('valheim', output).find((p) => p.steamid === steamid);
-      if (found && found.name) name = found.name;
+      if (found && found.name) {
+        name = found.name;
+        if (found.spawned) {
+          spawned = true;
+          break;
+        }
+      }
     } catch {
       /* retry */
     }
-    if (!name) await new Promise((resolve) => setTimeout(resolve, 1500));
+    await new Promise((resolve) => setTimeout(resolve, 2000));
   }
-  if (name) {
-    touchRuntime(serverId, { lastResolvedName: name, lastResolveError: null });
-    await welcomeFromConsole(ctx, serverId, name, settings);
-  } else {
+  if (!name) {
     touchRuntime(serverId, { lastResolveError: `name unresolved for ${steamid}` });
     ctx.logger.debug({ serverId, steamid }, 'idle-stop Valheim join name unresolved; poll fallback will handle it');
+    return;
   }
+  // If we never caught a spawned position, give it a little longer anyway.
+  if (!spawned) await new Promise((resolve) => setTimeout(resolve, 5000));
+  touchRuntime(serverId, { lastResolvedName: name, lastResolveError: null });
+  await welcomeFromConsole(ctx, serverId, name, settings);
 }
 
 function ensureConsoleSub(ctx, serverId) {

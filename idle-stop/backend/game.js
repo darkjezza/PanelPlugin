@@ -101,11 +101,17 @@ export function parsePlayers(style, output) {
   }
 
   if (style === 'valheim') {
-    // ValheimRcon `players`: "<name> Steam ID:<id> Position: ... Zone: ..."
+    // ValheimRcon `players`: "<name> Steam ID:<id> Position: (x y z) Zone: ...".
+    // Position is (0 0 0) until the character has actually spawned in.
     const players = [];
     for (const line of text.split('\n')) {
       const match = line.match(/^(.*?)\s*Steam ID:(\d{5,20})/i);
-      if (match && match[1].trim()) players.push({ name: match[1].trim(), steamid: match[2] });
+      if (!match || !match[1].trim()) continue;
+      const posMatch = line.match(/Position:\s*\(([^)]*)\)/i);
+      const position = posMatch ? posMatch[1].trim() : '';
+      const nums = position.split(/[\s,]+/).map(Number).filter((n) => Number.isFinite(n));
+      const spawned = nums.length >= 3 && nums.some((n) => Math.abs(n) > 0.01);
+      players.push({ name: match[1].trim(), steamid: match[2], position, spawned });
     }
     return players;
   }
