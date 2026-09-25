@@ -15,18 +15,20 @@
  */
 
 import { a2sPlayerCount, a2sPlayers } from './a2s.js';
+import { noCommand } from './nocmd.js';
 import { rconExec } from './rcon.js';
 import { redactSettings, resolveSettings } from './presets.js';
 import {
   buildBan,
-  buildBroadcast,
+  buildBroadcastCommands,
   buildKick,
   buildUnban,
-  buildWelcome,
+  buildWelcomeCommands,
   normalizeMinutes,
   parseBans,
   parsePlayers,
   playerKey,
+  renderMessage,
   styleFor,
   usesRcon,
 } from './game.js';
@@ -150,7 +152,10 @@ function touchRuntime(serverId, patch) {
   runtimeInfo.set(serverId, { ...(runtimeInfo.get(serverId) || {}), ...patch });
 }
 
-const WELCOME_DEDUP_MS = 5 * 60 * 1000;
+// De-dup window between the console and poll welcome paths. Short enough that
+// leaving and rejoining welcomes the player again, long enough to stop the two
+// paths double-welcoming one join.
+const WELCOME_DEDUP_MS = 60 * 1000;
 
 function recentlyWelcomed(welcomed, name) {
   if (!name) return false;
@@ -534,20 +539,48 @@ async function probePlayers(ctx, server, settings) {
   // If the operator forced A2S, never touch RCON for the player list.
   if (settings.playerSource === 'a2s') {
     if (style === 'source') {
-      try {
-        const { host, port } = resolveEndpoint(settings.queryHost, settings.queryPort, server);
-        if (!host || !port) throw new Error('A2S query needs a reachable host and port (set queryHost/queryPort)');
-        const players = (await a2sPlayers({ host, port }))
-          .map((p) => ({ name: String(p.name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim() }))
-          .filter((p) => p.name);
-        return { mode: 'list', players, count: players.length, source: 'a2s', output: null, listError: null };
-      } catch {
-        const res = await countPlayers(ctx, server, settings);
-        return { mode: 'count', players: [], count: res.count, source: res.source, output: res.output || null, listError: null };
+      const { host, port } = resolveEndpoint(settings.queryHost, settings.queryPort, server);
+      if (!host || !port) {
+        return { mode: 'count', players: [], count: 0, source: 'a2s', output: null, listError: 'A2S query needs a reachable host and port (set queryHost/queryPort)' };
       }
+      // A2S_INFO carries the authoritative player count; A2S_PLAYER may not
+      // expose names at all (e.g. Nuclear Option returns empty names).
+      let infoCount = null;
+      try {
+        infoCount = (await a2sPlayerCount({ host, port })).players;
+      } catch {
+        /* ignore */
+      }
+      let names = [];
+      try {
+        names = (await a2sPlayers({ host, port }))
+          .map((p) => String(p.name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim())
+          .filter(Boolean);
+      } catch {
+        /* ignore */
+      }
+      if (names.length) {
+        return { mode: 'list', players: names.map((name) => ({ name })), count: Math.max(infoCount ?? 0, names.length), source: 'a2s', output: null, listError: null };
+      }
+      return { mode: 'count', players: [], count: infoCount ?? 0, source: 'a2s', output: null, listError: null };
     }
     const res = await countPlayers(ctx, server, settings);
     return { mode: 'count', players: [], count: res.count, source: res.source, output: res.output || null, listError: null };
+  }
+
+  if (style === 'nuclear') {
+    try {
+      const { host, port } = nuclearEndpoint(server, settings);
+      if (!host || !port) throw new Error('Nuclear Option remote commands need a reachable host and port (set rconHost/rconPort; default 7779)');
+      const res = await noCommand({ host, port, name: 'get-player-list', args: [] });
+      const list = res.body && Array.isArray(res.body.Players) ? res.body.Players : [];
+      const players = list
+        .map((p) => ({ steamid: String(p.steamId || '').trim(), name: String(p.steamId || '').trim(), faction: p.faction || null }))
+        .filter((p) => p.steamid);
+      return { mode: 'list', players, count: players.length, source: 'nuclear', output: null, listError: null };
+    } catch (err) {
+      return { mode: 'count', players: [], count: 0, source: 'nuclear', output: null, listError: err?.message || String(err) };
+    }
   }
 
   if (style === 'valheim') {
@@ -659,6 +692,23 @@ async function sendGameCommand(ctx, server, settings, command) {
   return null;
 }
 
+function nuclearEndpoint(server, settings) {
+  const parsed = parseHostPort(settings.rconHost);
+  const host = normalizeHost(parsed.host) || normalizeHost(server.primaryIp);
+  const port = Number(settings.rconPort) || parsed.port || Number(settings.rconDefaultPort) || 7779;
+  return { host, port };
+}
+
+/** Send one Nuclear Option remote command; returns the response body as text. */
+async function sendNuclear(ctx, server, settings, name, args = []) {
+  const { host, port } = nuclearEndpoint(server, settings);
+  if (!host || !port) {
+    throw new Error('Nuclear Option remote commands need a reachable host and port (set rconHost/rconPort; default 7779)');
+  }
+  const res = await noCommand({ host, port, name, args });
+  return res.raw || `ok(${res.status})`;
+}
+
 async function sendAgentStop(ctx, server) {
   const gateway = ctx.wsGateway;
   if (!gateway || typeof gateway.sendToAgent !== 'function') throw new Error('console gateway unavailable');
@@ -685,8 +735,15 @@ async function performStop(ctx, server, settings, playerCount) {
 // ---------------------------------------------------------------- welcome ---
 
 async function sendWelcome(ctx, server, settings, player) {
-  const command = buildWelcome(settings.preset, player.name, settings.welcomeMessage, server.name);
-  await sendGameCommand(ctx, server, settings, command);
+  if (styleFor(settings.preset) === 'nuclear') {
+    const text = renderMessage(settings.welcomeMessage, { player: player.name, server: server.name });
+    if (text) await sendNuclear(ctx, server, settings, 'send-chat-message', [text]);
+    await writeState(ctx, server.id, { lastWelcomeAt: Date.now() });
+    emit(ctx, 'idle-stop:welcomed', { serverId: server.id, player: player.name });
+    return;
+  }
+  const commands = buildWelcomeCommands(settings.preset, player.name, settings.welcomeMessage, server.name);
+  for (const command of commands) await sendGameCommand(ctx, server, settings, command);
   await writeState(ctx, server.id, { lastWelcomeAt: Date.now() });
   emit(ctx, 'idle-stop:welcomed', { serverId: server.id, player: player.name });
 }
@@ -702,8 +759,8 @@ async function welcomeFromConsole(ctx, serverId, name, settings) {
   const welcomed = state.welcomed || {};
   if (recentlyWelcomed(welcomed, name)) return;
   try {
-    const command = buildWelcome(settings.preset, name, settings.welcomeMessage, server.name);
-    await sendGameCommand(ctx, server, settings, command);
+    const commands = buildWelcomeCommands(settings.preset, name, settings.welcomeMessage, server.name);
+    for (const command of commands) await sendGameCommand(ctx, server, settings, command);
     welcomed[String(name).toLowerCase()] = Date.now();
     await writeState(ctx, serverId, { welcomed: pruneWelcomed(welcomed), lastWelcomeAt: Date.now() });
     touchRuntime(serverId, { lastWelcomePlayer: name, lastWelcomeError: null });
@@ -1362,6 +1419,12 @@ export default {
           steamid: body.steamid || null,
         };
         try {
+          if (styleFor(settings.preset) === 'nuclear') {
+            if (!player.steamid) throw new Error('Nuclear Option kick needs a SteamID');
+            await sendNuclear(ctx, server, settings, 'kick-player', [player.steamid]);
+            emit(ctx, 'idle-stop:kicked', { serverId: server.id, target: player.steamid, reason: null });
+            return { success: true, serverId: server.id, command: `kick-player ${player.steamid}` };
+          }
           const command = buildKick(settings.preset, player, body.reason);
           await sendGameCommand(ctx, server, settings, command);
           emit(ctx, 'idle-stop:kicked', { serverId: server.id, target: player.name || player.steamid || player.userid, reason: body.reason || null });
@@ -1386,8 +1449,15 @@ export default {
         const minutes = normalizeMinutes(body.minutes, settings.defaultBanMinutes);
         const reason = body.reason || settings.defaultBanReason || '';
         try {
-          const command = buildBan(settings.preset, player, minutes, reason);
-          await sendGameCommand(ctx, server, settings, command);
+          let command;
+          if (styleFor(settings.preset) === 'nuclear') {
+            if (!player.steamid) throw new Error('Nuclear Option ban needs a SteamID');
+            await sendNuclear(ctx, server, settings, 'banlist-add', [player.steamid, reason || '']);
+            command = `banlist-add ${player.steamid}`;
+          } else {
+            command = buildBan(settings.preset, player, minutes, reason);
+            await sendGameCommand(ctx, server, settings, command);
+          }
           const record = {
             serverId: server.id,
             name: player.name || null,
@@ -1426,6 +1496,16 @@ export default {
             const style = styleFor(settings.preset);
             const output = await rcon(ctx, server, settings, settings.banListCommand);
             remote = { ok: true, bans: parseBans(style, output), error: null };
+          } else if (styleFor(settings.preset) === 'nuclear' && ctx.fileTunnel) {
+            // Nuclear Option keeps bans in ban_list.txt (one SteamID per line).
+            const res = await ctx.fileTunnel.queueRequest(server.nodeId, 'download', server.uuid, 'ban_list.txt');
+            if (res?.success && res.body) {
+              const text = Buffer.isBuffer(res.body) ? res.body.toString('utf8') : String(res.body);
+              const bans = text.split(/\r?\n/).map((s) => s.trim()).filter(Boolean).map((t) => ({ target: t }));
+              remote = { ok: true, bans, error: null };
+            } else {
+              remote = { ok: false, bans: [], error: 'ban_list.txt not found' };
+            }
           } else {
             remote = { ok: false, bans: [], error: 'no ban list command configured' };
           }
@@ -1449,8 +1529,15 @@ export default {
         const overrides = await loadOverrides(ctx);
         const settings = resolveSettings(readGlobalConfig(ctx), server, overrides.get(server.id) || {});
         try {
-          const command = buildUnban(settings.preset, record);
-          await sendGameCommand(ctx, server, settings, command);
+          let command;
+          if (styleFor(settings.preset) === 'nuclear') {
+            const steamid = record.steamid || record.target;
+            await sendNuclear(ctx, server, settings, 'banlist-remove', [steamid]);
+            command = `banlist-remove ${steamid}`;
+          } else {
+            command = buildUnban(settings.preset, record);
+            await sendGameCommand(ctx, server, settings, command);
+          }
           await ctx.collection(BANS_COLLECTION).delete({ _id: request.params.banId });
           emit(ctx, 'idle-stop:unbanned', { serverId: server.id, target: record.target });
           return { success: true, serverId: server.id, command };
@@ -1573,7 +1660,14 @@ export default {
           const settings = resolveSettings(global, server, overrides.get(server.id) || {});
           const message = body.message || settings.welcomeMessage;
           try {
-            await sendGameCommand(ctx, server, settings, buildBroadcast(settings.preset, message, server.name));
+            if (styleFor(settings.preset) === 'nuclear') {
+              const text = renderMessage(message, { server: server.name });
+              if (text) await sendNuclear(ctx, server, settings, 'send-chat-message', [text]);
+            } else {
+              for (const command of buildBroadcastCommands(settings.preset, message, server.name)) {
+                await sendGameCommand(ctx, server, settings, command);
+              }
+            }
             sent.push(server.id);
           } catch (err) {
             errors.push(`${server.name}: ${err.message}`);

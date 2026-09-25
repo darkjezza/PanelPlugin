@@ -425,7 +425,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
     const threshold = inputEl({ type: 'number', min: '0', value: String(st.emptyThreshold ?? 0) });
     const uptime = inputEl({ type: 'number', min: '0', value: String(st.minServerUptimeSeconds ?? 180) });
     const interval = inputEl({ type: 'number', min: '15', value: String(st.checkIntervalSeconds ?? 30) });
-    const preset = selectEl(['auto', 'minecraft-java', 'source', 'goldsrc', 'valheim', 'palworld', 'project-zomboid', 'custom'], st.preset || 'auto');
+    const preset = selectEl(['auto', 'minecraft-java', 'source', 'goldsrc', 'valheim', 'palworld', 'project-zomboid', 'nuclear-option', 'custom'], st.preset || 'auto');
     const stopMethod = selectEl(['console', 'agent'], st.stopMethod || 'console');
     const stopCommand = inputEl({ type: 'text', value: st.stopCommand || '' });
     const playerSource = selectEl(['auto', 'a2s', 'rcon'], st.playerSource || 'auto');
@@ -603,7 +603,7 @@ function IdleStopTab(props: { serverId?: string }): React.ReactElement {
 export default {
   manifest: {
     name: 'idle-stop',
-    version: '1.6.1',
+    version: '1.6.5',
     displayName: 'Idle Stop & Player Admin',
     description: 'Auto-stop empty servers, plus player list, kick, ban, ban list and welcome messages.',
     author: 'SpiritNetworks',

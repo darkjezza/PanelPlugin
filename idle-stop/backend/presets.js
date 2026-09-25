@@ -77,6 +77,18 @@ export const PRESETS = {
     rconPortOffset: 0,
     rconDefaultPort: 27015,
   },
+  'nuclear-option': {
+    // Nuclear Option JSON-over-TCP remote commands (`-ServerRemoteCommands`).
+    playerSource: 'nuclear',
+    playerCommand: 'get-player-list',
+    playerRegex: '',
+    playerListCommand: 'get-player-list',
+    banListCommand: '',
+    stopMethod: 'agent',
+    stopCommand: '',
+    rconPortOffset: 0,
+    rconDefaultPort: 7779,
+  },
   custom: {},
 };
 
@@ -118,6 +130,9 @@ export function detectPreset(server) {
   }
   if (/(zomboid|pzserver|project-?zomboid)/.test(haystack)) {
     return 'project-zomboid';
+  }
+  if (/(nuclearoption|nuclear-option|nuclear_option)/.test(haystack)) {
+    return 'nuclear-option';
   }
   if (/(srcds|cs2|csgo|counter-strike|tf2|gmod|source)/.test(haystack)) {
     return 'source';

@@ -21,7 +21,13 @@ export function styleFor(preset) {
   if (preset === 'valheim') return 'valheim';
   if (preset === 'palworld') return 'palworld';
   if (preset === 'project-zomboid') return 'zomboid';
+  if (preset === 'nuclear-option') return 'nuclear';
   return 'custom';
+}
+
+/** Rendered, sanitized message text (used by transports that take raw text). */
+export function renderMessage(message, vars = {}) {
+  return cleanMessage(applyVars(message, vars));
 }
 
 /** Games whose commands must go over RCON (no usable stdin console). */
@@ -261,6 +267,32 @@ export function buildBroadcast(preset, message, serverName = '') {
   if (style === 'zomboid') return `servermsg "${text}"`;
   if (style === 'valheim') return `showMessage ${text}`;
   return `say ${text}`;
+}
+
+/**
+ * Welcome as one or more commands. Valheim gets both a centre-screen message
+ * and a chat shout, because delivery across Valheim builds is inconsistent.
+ */
+export function buildWelcomeCommands(preset, playerName, message, serverName = '') {
+  const text = cleanMessage(applyVars(message, { player: playerName, server: serverName }));
+  if (!text) throw new Error('welcome message is empty after sanitizing');
+  const style = styleFor(preset);
+  if (style === 'minecraft') return [`tell ${cleanName(playerName)} ${text}`];
+  if (style === 'valheim') return [`showMessage ${text}`, `say ${text}`];
+  if (style === 'palworld') return [`Broadcast ${text}`];
+  if (style === 'zomboid') return [`servermsg "${text}"`];
+  return [`say ${text}`];
+}
+
+/** Broadcast as one or more commands (Valheim gets showMessage + say). */
+export function buildBroadcastCommands(preset, message, serverName = '') {
+  const text = cleanMessage(applyVars(message, { server: serverName }));
+  if (!text) throw new Error('message is empty after sanitizing');
+  const style = styleFor(preset);
+  if (style === 'palworld') return [`Broadcast ${text}`];
+  if (style === 'zomboid') return [`servermsg "${text}"`];
+  if (style === 'valheim') return [`showMessage ${text}`, `say ${text}`];
+  return [`say ${text}`];
 }
 
 /** Stable identity key for diffing player lists between polls. */

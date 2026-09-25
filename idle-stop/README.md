@@ -32,6 +32,7 @@ Built-in presets:
 | `valheim` | `players` (ValheimRcon) or console roster | `banlist` | agent | `kick <steamid>` | `ban <steamid>` / `unban <steamid>` |
 | `palworld` | `ShowPlayers` (CSV) | *(local records)* | agent | `KickPlayer <steamid>` | `BanPlayer <steamid>` / `UnBanPlayer <steamid>` |
 | `project-zomboid` | `players` | *(local records)* | agent | `kickuser <name>` | `banuser <name>` / `unbanuser <name>` |
+| `nuclear-option` | `get-player-list` (SteamIDs) | `ban_list.txt` | agent | `kick-player <steamid>` | `banlist-add` / `banlist-remove <steamid>` |
 | `custom` | configure | configure | configure | configure | configure |
 
 `gamePreset: auto` guesses the preset from the server's startup command and environment.
@@ -46,6 +47,15 @@ Recommended: install the [ValheimRcon](https://thunderstore.io/c/valheim/p/Trist
 - **Welcome**: `say <message>` (server-wide — Valheim has no per-player message command).
 
 The preset uses `rconPortOffset: 2`, so the RCON port is the game port + 2 (Valheim default `2456` → `2458`) unless you set `rconPort`. The password is auto-detected from `BepInEx/config/org.tristan.rcon.cfg` (the port there is used when set), or you can type it in the server tab. Note: a ValheimRcon password is mandatory — an empty password disables the mod.
+
+### Nuclear Option
+
+Nuclear Option's dedicated server has a JSON-over-TCP remote command interface. Start it with `-ServerRemoteCommands [port]` (default **7779**) and set that port in the server tab (`rconPort`, or leave `0` for 7779).
+
+- **Player list**: `get-player-list` — returns **SteamIDs + faction** only (the headless server doesn't cache display names, so rows show SteamIDs).
+- **Kick**: `kick-player <steamid>` (cannot rejoin until the server restarts).
+- **Ban / Unban**: `banlist-add <steamid> [reason]` / `banlist-remove <steamid>`; the Bans panel reads the server's `ban_list.txt`.
+- **Welcome**: `send-chat-message <text>` (broadcast to all chat; no per-player name available, so `{player}` resolves to the SteamID).
 
 ### Palworld / Project Zomboid
 
@@ -183,5 +193,6 @@ Ban records are stored in the plugin's `idle_stop_bans` collection and returned 
 - A2S cannot ban by SteamID and shows names only; Source/GoldSrc bans and SteamIDs need RCON.
 - Minecraft temporary bans depend on the server/plugins; vanilla `ban` is permanent.
 - If the Players panel reports a timeout or "no reachable endpoint", set `queryHost`/`queryPort` (A2S) or `rconHost`/`rconPort` to an address the panel can reach. RCON password discovery is cached for 5 minutes and bounded to 5 seconds so it never blocks a request.
+- Games with an A2S query but no RCON (e.g. Nuclear Option) expose only a player **count**, not names, so the Players list shows a count and welcome/kick/ban are unavailable there. Set `queryHost`/`queryPort` (the A2S/query port, often game port + 1) and `playerSource: a2s`.
 - Some games report bots as players; raise `emptyThreshold` if needed.
 - The `agent` stop method sends `stop_server` to the node agent; prefer the default `console` method.
