@@ -169,8 +169,9 @@ export function buildBan(preset, player, minutes, reason) {
     return cleaned ? `ban ${name} ${cleaned}` : `ban ${name}`;
   }
   if (style === 'valheim') {
-    const target = player.steamid ? normalizeValheimTarget(player.steamid) : normalizeValheimTarget(player.name);
-    return `ban ${target}`;
+    // banSteamId is unambiguous when we know the SteamID.
+    if (player.steamid) return `banSteamId ${normalizeValheimTarget(player.steamid)}`;
+    return `ban ${normalizeValheimTarget(player.name)}`;
   }
   throw new Error('ban is not supported for this game preset');
 }

@@ -1,6 +1,6 @@
 {
   "name": "idle-stop",
-  "version": "1.5.3",
+  "version": "1.5.6",
   "displayName": "Idle Stop & Player Admin",
   "description": "Stops a game server automatically once the last player leaves, and adds player administration: live player list, kick, ban, ban list, a nuclear reset, and a welcome message. Player data comes from an A2S query (Source/GoldSrc) or Source-RCON output (Minecraft and custom games).",
   "author": "SpiritNetworks",
@@ -202,8 +202,12 @@
       "description": "Emitted after the local ban list for a server is cleared."
     },
     "idle-stop:nuclear": {
-      "payload": { "serverId": "string", "kicked": "number", "unbanned": "number" },
-      "description": "Emitted after the nuclear reset (kick all + clear bans)."
+      "payload": { "serverId": "string", "unbanned": "number" },
+      "description": "Emitted after the nuclear reset (clear bans + clear session)."
+    },
+    "idle-stop:session-cleared": {
+      "payload": { "serverId": "string" },
+      "description": "Emitted after the plugin forgets a server's player roster, welcomes and idle timers."
     }
   },
   "dependencies": {}

@@ -536,18 +536,32 @@ function mountServer(root: HTMLElement, serverId: string): void {
   function renderNuke(): void {
     nukeHost.innerHTML = '';
     const confirmInput = inputEl({ type: 'text', placeholder: 'Type NUKE to confirm' });
-    const run = button('Kick everyone & clear bans', async () => {
+    const clearSession = button('Clear session', async () => {
+      if (!window.confirm("Forget this server's player roster, welcomes and idle timers? Bans are not touched.")) return;
+      clearSession.disabled = true;
+      try {
+        await api(`/servers/${encodeURIComponent(serverId)}/clear-session`, { method: 'POST' });
+        status.textContent = 'Session cleared.';
+        await Promise.all([refreshPlayers(), refreshBans()]);
+      } catch (err: any) {
+        status.textContent = `Error: ${err.message}`;
+      } finally {
+        clearSession.disabled = false;
+      }
+    }, 'muted');
+
+    const run = button('Clear bans & session', async () => {
       if (confirmInput.value !== 'NUKE') {
         status.textContent = 'Type NUKE to confirm the nuclear reset.';
         return;
       }
-      if (!window.confirm(`Nuclear reset on ${(current as Dict).name}: kick all players and clear all bans. Continue?`)) return;
+      if (!window.confirm(`Nuclear reset on ${(current as Dict).name}: remove all bans and clear the session? Online players are not kicked.`)) return;
       run.disabled = true;
       status.textContent = 'Running nuclear reset…';
       try {
         const r = await api(`/servers/${encodeURIComponent(serverId)}/nuclear`, { method: 'POST', body: { confirm: 'NUKE' } });
         const res = r.result || {};
-        status.textContent = `Nuclear done: ${res.kicked} kicked, ${res.unbanned} unbanned, ${res.cleared} local record(s) cleared${res.errors && res.errors.length ? `; errors: ${res.errors.join('; ')}` : ''}`;
+        status.textContent = `Nuclear done: ${res.unbanned} unbanned, ${res.cleared} local record(s) cleared, session reset${res.errors && res.errors.length ? `; errors: ${res.errors.join('; ')}` : ''}`;
         await Promise.all([refreshPlayers(), refreshBans()]);
       } catch (err: any) {
         status.textContent = `Error: ${err.message}`;
@@ -558,10 +572,14 @@ function mountServer(root: HTMLElement, serverId: string): void {
     }, 'danger');
 
     nukeHost.appendChild(card('Danger zone', [
-      el('p', { className: 'text-sm text-red-300 mb-3', text: 'Kicks every online player, removes bans from the server, and deletes this plugin\u2019s ban records for this server. This cannot be undone.' }),
+      el('p', { className: 'text-sm text-red-300 mb-3', text: 'Removes bans from the server, deletes this plugin\u2019s ban records, and forgets this server\u2019s player session. Online players are not kicked. This cannot be undone.' }),
       el('div', { className: 'flex flex-col sm:flex-row gap-3' }, [
         el('div', { className: 'flex-1' }, [confirmInput]),
         run,
+      ]),
+      el('div', { className: 'flex items-center gap-3 pt-3' }, [
+        clearSession,
+        el('span', { className: 'text-xs text-gray-400', text: 'Clear session only: forget the roster, welcomes and timers (bans stay).' }),
       ]),
     ]));
   }
@@ -585,7 +603,7 @@ function IdleStopTab(props: { serverId?: string }): React.ReactElement {
 export default {
   manifest: {
     name: 'idle-stop',
-    version: '1.5.3',
+    version: '1.5.6',
     displayName: 'Idle Stop & Player Admin',
     description: 'Auto-stop empty servers, plus player list, kick, ban, ban list and welcome messages.',
     author: 'SpiritNetworks',
@@ -593,7 +611,7 @@ export default {
   tabs: [
     {
       id: 'idle-stop-admin',
-      label: 'Idle Stop',
+      label: 'Idle Stop & Player Admin',
       icon: 'Moon',
       component: IdleStopTab,
       location: 'admin',
@@ -602,7 +620,7 @@ export default {
     },
     {
       id: 'idle-stop-server',
-      label: 'Idle Stop',
+      label: 'Idle Stop & Player Admin',
       icon: 'Moon',
       component: IdleStopTab,
       location: 'server',

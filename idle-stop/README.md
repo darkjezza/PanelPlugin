@@ -5,7 +5,7 @@ A Catalyst panel plugin that:
 - **stops a game server once its last player leaves** and it stays empty for a grace period;
 - shows a **live player list** and lets staff **kick** and **ban** players;
 - shows a **ban list** and lets staff **unban**;
-- offers a **nuclear reset** — kick everyone and clear all bans at once;
+- offers a **nuclear reset** — clear all bans and reset the session (it does not kick players) — plus a **clear session** action on its own;
 - sends a **welcome message** to players as they join, with one global message for all servers and per-server overrides.
 
 It is a panel plugin (not a game-server mod). It runs inside the panel process and talks to each game server over its normal query/RCON ports.
@@ -132,7 +132,9 @@ curl -X DELETE -H "$AUTH" "$BASE/servers/<id>/bans/<banId>"
 curl -X POST -H "$AUTH" "$BASE/servers/<id>/bans/clear"
 
 curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"confirm":"NUKE"}' "$BASE/servers/<id>/nuclear"   # kick all + clear all bans
+  -d '{"confirm":"NUKE"}' "$BASE/servers/<id>/nuclear"   # clear all bans + reset session (does not kick)
+
+curl -X POST -H "$AUTH" "$BASE/servers/<id>/clear-session"   # forget roster/welcomes/timers (bans stay)
 
 curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"message":"Welcome, {player}!"}' "$BASE/welcome/broadcast"
@@ -153,7 +155,8 @@ Ban records are stored in the plugin's `idle_stop_bans` collection and returned 
 | `idle-stop:banned` | `{ serverId, target, minutes }` |
 | `idle-stop:unbanned` | `{ serverId, target }` |
 | `idle-stop:bans-cleared` | `{ serverId, count }` |
-| `idle-stop:nuclear` | `{ serverId, kicked, unbanned }` |
+| `idle-stop:nuclear` | `{ serverId, unbanned }` |
+| `idle-stop:session-cleared` | `{ serverId }` |
 
 ## Permissions
 

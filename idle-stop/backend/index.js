@@ -111,7 +111,6 @@ function configPathsFor(preset) {
 const PROBE_TIMEOUT_MS = 15000;
 const rconPasswordCache = new Map();
 const MAX_WELCOMES_PER_TICK = 20;
-const MAX_KICKS_PER_ACTION = 50;
 
 let ticking = false;
 let loopTimer = null;
@@ -209,6 +208,30 @@ async function writeState(ctx, serverId, patch) {
   const next = { ...(await readState(ctx, serverId)), ...patch };
   await ctx.setStorage(`state:${serverId}`, next);
   return next;
+}
+
+/**
+ * Forget everything this plugin learned about a server's current session:
+ * player roster, welcomed players, idle timers and last errors. Ban records
+ * are not touched.
+ */
+async function clearServerSession(ctx, serverId) {
+  rosterCache.set(serverId, new Map());
+  const state = await readState(ctx, serverId);
+  await writeState(ctx, serverId, {
+    roster: {},
+    rosterSeen: state.rosterSeen === true,
+    welcomed: {},
+    knownPlayers: [],
+    idleSince: null,
+    firstSeenRunning: null,
+    lastCheckAt: 0,
+    lastCount: null,
+    lastCountAt: null,
+    lastError: null,
+    lastErrorAt: null,
+    lastWelcomeAt: null,
+  });
 }
 
 async function loadOverrides(ctx) {
@@ -544,6 +567,19 @@ async function sendConsoleCommand(ctx, server, command) {
   if (!ok) throw new Error('agent is offline; command was not delivered');
 }
 
+/**
+ * Deliver a game command using the transport the game supports: ValheimRcon
+ * executes commands over RCON, while Source/GoldSrc/Minecraft use the
+ * container console (stdin). Returns any RCON output.
+ */
+async function sendGameCommand(ctx, server, settings, command) {
+  if (styleFor(settings.preset) === 'valheim') {
+    return rcon(ctx, server, settings, command);
+  }
+  await sendConsoleCommand(ctx, server, command);
+  return null;
+}
+
 async function sendAgentStop(ctx, server) {
   const gateway = ctx.wsGateway;
   if (!gateway || typeof gateway.sendToAgent !== 'function') throw new Error('console gateway unavailable');
@@ -560,7 +596,7 @@ async function performStop(ctx, server, settings, playerCount) {
     await sendAgentStop(ctx, server);
   } else {
     if (!settings.stopCommand) throw new Error('no stop command configured');
-    await sendConsoleCommand(ctx, server, settings.stopCommand);
+    await sendGameCommand(ctx, server, settings, settings.stopCommand);
   }
   await writeState(ctx, server.id, { stopIssuedAt: Date.now(), lastStopAt: Date.now(), idleSince: null });
   ctx.logger.info({ serverId: server.id, playerCount, method: settings.stopMethod }, 'idle-stop stopped an empty server');
@@ -571,7 +607,7 @@ async function performStop(ctx, server, settings, playerCount) {
 
 async function sendWelcome(ctx, server, settings, player) {
   const command = buildWelcome(settings.preset, player.name, settings.welcomeMessage, server.name);
-  await sendConsoleCommand(ctx, server, command);
+  await sendGameCommand(ctx, server, settings, command);
   await writeState(ctx, server.id, { lastWelcomeAt: Date.now() });
   emit(ctx, 'idle-stop:welcomed', { serverId: server.id, player: player.name });
 }
@@ -588,7 +624,7 @@ async function welcomeFromConsole(ctx, serverId, name, settings) {
   if (recentlyWelcomed(welcomed, name)) return;
   try {
     const command = buildWelcome(settings.preset, name, settings.welcomeMessage, server.name);
-    await sendConsoleCommand(ctx, server, command);
+    await sendGameCommand(ctx, server, settings, command);
     welcomed[String(name).toLowerCase()] = Date.now();
     await writeState(ctx, serverId, { welcomed: pruneWelcomed(welcomed), lastWelcomeAt: Date.now() });
     emit(ctx, 'idle-stop:welcomed', { serverId, player: name });
@@ -1193,7 +1229,7 @@ export default {
         };
         try {
           const command = buildKick(settings.preset, player, body.reason);
-          await sendConsoleCommand(ctx, server, command);
+          await sendGameCommand(ctx, server, settings, command);
           emit(ctx, 'idle-stop:kicked', { serverId: server.id, target: player.name || player.steamid || player.userid, reason: body.reason || null });
           return { success: true, serverId: server.id, command };
         } catch (err) {
@@ -1217,7 +1253,7 @@ export default {
         const reason = body.reason || settings.defaultBanReason || '';
         try {
           const command = buildBan(settings.preset, player, minutes, reason);
-          await sendConsoleCommand(ctx, server, command);
+          await sendGameCommand(ctx, server, settings, command);
           const record = {
             serverId: server.id,
             name: player.name || null,
@@ -1254,15 +1290,8 @@ export default {
         try {
           if (settings.banListCommand) {
             const style = styleFor(settings.preset);
-            if (style === 'valheim') {
-              const capture = captureConsole(server.id);
-              await sendConsoleCommand(ctx, server, settings.banListCommand);
-              const output = await capture;
-              remote = { ok: true, bans: parseBans('valheim', output), error: null, raw: output.slice(0, 2000) };
-            } else {
-              const output = await rcon(ctx, server, settings, settings.banListCommand);
-              remote = { ok: true, bans: parseBans(style, output), error: null };
-            }
+            const output = await rcon(ctx, server, settings, settings.banListCommand);
+            remote = { ok: true, bans: parseBans(style, output), error: null };
           } else {
             remote = { ok: false, bans: [], error: 'no ban list command configured' };
           }
@@ -1287,7 +1316,7 @@ export default {
         const settings = resolveSettings(readGlobalConfig(ctx), server, overrides.get(server.id) || {});
         try {
           const command = buildUnban(settings.preset, record);
-          await sendConsoleCommand(ctx, server, command);
+          await sendGameCommand(ctx, server, settings, command);
           await ctx.collection(BANS_COLLECTION).delete({ _id: request.params.banId });
           emit(ctx, 'idle-stop:unbanned', { serverId: server.id, target: record.target });
           return { success: true, serverId: server.id, command };
@@ -1324,35 +1353,18 @@ export default {
         }
         const overrides = await loadOverrides(ctx);
         const settings = resolveSettings(readGlobalConfig(ctx), server, overrides.get(server.id) || {});
-        const result = { kicked: 0, unbanned: 0, cleared: 0, errors: [] };
+        const result = { unbanned: 0, cleared: 0, errors: [] };
         const style = styleFor(settings.preset);
 
-        // 1. Kick everyone currently online.
-        try {
-          if (server.status !== 'running') {
-            return { success: false, serverId: server.id, error: `server is not running (${server.status})` };
-          }
-          const probe = await probePlayersQuick(ctx, server, settings);
-          for (const player of probe.players.slice(0, MAX_KICKS_PER_ACTION)) {
-            try {
-              await sendConsoleCommand(ctx, server, buildKick(settings.preset, player, 'Server reset'));
-              result.kicked += 1;
-            } catch (err) {
-              result.errors.push(`kick ${player.name}: ${err.message}`);
-            }
-          }
-        } catch (err) {
-          result.errors.push(`player list: ${err.message}`);
-        }
-
-        // 2. Best-effort removal of remote bans.
+        // 1. Best-effort removal of remote bans.
         try {
           if (settings.banListCommand) {
             const output = await rcon(ctx, server, settings, settings.banListCommand);
             for (const ban of parseBans(style, output)) {
               try {
-                if (style === 'source') await sendConsoleCommand(ctx, server, `removeid ${ban.target}`);
-                else await sendConsoleCommand(ctx, server, `pardon ${ban.target}`);
+                if (style === 'source') await sendGameCommand(ctx, server, settings, `removeid ${ban.target}`);
+                else if (style === 'minecraft') await sendGameCommand(ctx, server, settings, `pardon ${ban.target}`);
+                else await sendGameCommand(ctx, server, settings, `unban ${ban.target}`);
                 result.unbanned += 1;
               } catch (err) {
                 result.errors.push(`unban ${ban.target}: ${err.message}`);
@@ -1363,15 +1375,30 @@ export default {
           result.errors.push(`ban list: ${err.message}`);
         }
 
-        // 3. Clear local ban records and player memory.
+        // 2. Clear local ban records and the whole session.
         const existing = (await ctx.collection(BANS_COLLECTION).find({ serverId: server.id })) || [];
         for (const record of existing) await ctx.collection(BANS_COLLECTION).delete({ _id: record._id });
         result.cleared = existing.length;
-        await writeState(ctx, server.id, { knownPlayers: [], idleSince: null, lastWelcomeAt: null });
+        await clearServerSession(ctx, server.id);
+        result.sessionCleared = true;
 
-        emit(ctx, 'idle-stop:nuclear', { serverId: server.id, kicked: result.kicked, unbanned: result.unbanned });
+        emit(ctx, 'idle-stop:nuclear', { serverId: server.id, unbanned: result.unbanned });
         ctx.logger.warn({ serverId: server.id, ...result }, 'idle-stop nuclear reset performed');
         return { success: true, serverId: server.id, result };
+      }),
+    });
+
+    ctx.registerRoute({
+      method: 'POST',
+      url: '/servers/:id/clear-session',
+      preHandler: ctx.requirePermission?.('server.write'),
+      handler: writeHandler(async (request, reply) => {
+        const server = await findServer(ctx, request.params.id);
+        if (!server) return reply.status(404).send({ success: false, error: 'server not found' });
+        await clearServerSession(ctx, server.id);
+        emit(ctx, 'idle-stop:session-cleared', { serverId: server.id });
+        ctx.logger.info({ serverId: server.id }, 'idle-stop session cleared');
+        return { success: true, serverId: server.id, message: 'session cleared' };
       }),
     });
 
@@ -1412,7 +1439,7 @@ export default {
           const settings = resolveSettings(global, server, overrides.get(server.id) || {});
           const message = body.message || settings.welcomeMessage;
           try {
-            await sendConsoleCommand(ctx, server, buildBroadcast(settings.preset, message, server.name));
+            await sendGameCommand(ctx, server, settings, buildBroadcast(settings.preset, message, server.name));
             sent.push(server.id);
           } catch (err) {
             errors.push(`${server.name}: ${err.message}`);
