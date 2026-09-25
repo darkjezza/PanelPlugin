@@ -55,6 +55,28 @@ export const PRESETS = {
     rosterJoinRegex: 'Got connection SteamID (\\d+)',
     rosterLeaveRegex: 'Closing socket (\\d+)',
   },
+  palworld: {
+    playerSource: 'rcon',
+    playerCommand: 'ShowPlayers',
+    playerRegex: '',
+    playerListCommand: 'ShowPlayers',
+    banListCommand: '',
+    stopMethod: 'agent',
+    stopCommand: '',
+    rconPortOffset: 0,
+    rconDefaultPort: 25575,
+  },
+  'project-zomboid': {
+    playerSource: 'rcon',
+    playerCommand: 'players',
+    playerRegex: 'Players connected \\((\\d+)\\)',
+    playerListCommand: 'players',
+    banListCommand: '',
+    stopMethod: 'agent',
+    stopCommand: '',
+    rconPortOffset: 0,
+    rconDefaultPort: 27015,
+  },
   custom: {},
 };
 
@@ -90,6 +112,12 @@ export function detectPreset(server) {
   }
   if (/(valheim)/.test(haystack)) {
     return 'valheim';
+  }
+  if (/(palworld|palserver)/.test(haystack)) {
+    return 'palworld';
+  }
+  if (/(zomboid|pzserver|project-?zomboid)/.test(haystack)) {
+    return 'project-zomboid';
   }
   if (/(srcds|cs2|csgo|counter-strike|tf2|gmod|source)/.test(haystack)) {
     return 'source';

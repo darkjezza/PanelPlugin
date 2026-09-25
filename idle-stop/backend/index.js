@@ -28,6 +28,7 @@ import {
   parsePlayers,
   playerKey,
   styleFor,
+  usesRcon,
 } from './game.js';
 
 const SETTINGS_COLLECTION = 'idle_stop_servers';
@@ -84,6 +85,13 @@ const VALHEIM_RCON_CFGS = [
   'BepInEx/config/rg.tristan.rcon.cfg',
   'BepInEx/config/org.tristan.rcon.cfg',
 ];
+const PALWORLD_CONFIG_PATHS = [
+  'Pal/Saved/Config/WindowsServer/PalWorldSettings.ini',
+  'Pal/Saved/Config/LinuxServer/PalWorldSettings.ini',
+];
+const ZOMBOID_CONFIG_PATHS = [
+  'Zomboid/Server/servertest.ini',
+];
 const RC_CONFIG_PATHS = [
   'server.properties',
   'server.cfg',
@@ -91,6 +99,8 @@ const RC_CONFIG_PATHS = [
   'csgo/cfg/server.cfg',
   'tf/cfg/server.cfg',
   ...VALHEIM_RCON_CFGS,
+  ...PALWORLD_CONFIG_PATHS,
+  ...ZOMBOID_CONFIG_PATHS,
 ];
 // File-tunnel requests can take up to 60s each; bound discovery hard and cache
 // the result so a user-facing request never hangs into a proxy timeout.
@@ -103,8 +113,12 @@ const isValheimRconCfg = (path) => VALHEIM_RCON_CFGS.includes(path);
 
 /** Config files most likely to hold the RCON password, in priority order. */
 function configPathsFor(preset) {
-  const rest = RC_CONFIG_PATHS.filter((p) => !isValheimRconCfg(p));
+  const rest = RC_CONFIG_PATHS.filter(
+    (p) => !isValheimRconCfg(p) && !PALWORLD_CONFIG_PATHS.includes(p) && !ZOMBOID_CONFIG_PATHS.includes(p),
+  );
   if (preset === 'valheim') return [...VALHEIM_RCON_CFGS, ...rest];
+  if (preset === 'palworld') return [...PALWORLD_CONFIG_PATHS, ...rest];
+  if (preset === 'project-zomboid') return [...ZOMBOID_CONFIG_PATHS, ...rest];
   if (preset === 'minecraft-java') return ['server.properties', ...rest.filter((p) => p !== 'server.properties')];
   return [...rest];
 }
@@ -354,6 +368,34 @@ function parseBepInExRconConfig(text) {
   return { password, port };
 }
 
+/** Palworld PalWorldSettings.ini: AdminPassword / RCONPort. */
+function parsePalworldConfig(text) {
+  let password = null;
+  let port = null;
+  const pw = String(text || '').match(/AdminPassword\s*=\s*"([^"]*)"/i);
+  if (pw && pw[1]) password = pw[1];
+  const pt = String(text || '').match(/RCONPort\s*=\s*(\d+)/i);
+  if (pt) {
+    const n = Number(pt[1]);
+    if (n > 0) port = n;
+  }
+  return { password, port };
+}
+
+/** Project Zomboid server .ini: RCONPassword / RCONPort. */
+function parseZomboidConfig(text) {
+  let password = null;
+  let port = null;
+  const pw = String(text || '').match(/^\s*RCONPassword\s*=\s*(.+)$/mi);
+  if (pw && pw[1].trim()) password = pw[1].trim();
+  const pt = String(text || '').match(/^\s*RCONPort\s*=\s*(\d+)/mi);
+  if (pt) {
+    const n = Number(pt[1]);
+    if (n > 0) port = n;
+  }
+  return { password, port };
+}
+
 /**
  * Find the RCON password (and, for ValheimRcon, the configured port) from the
  * server's config files. Cached and hard-bounded so it never blocks a request.
@@ -391,14 +433,21 @@ async function discoverRcon(ctx, server, preset) {
             const res = await ctx.fileTunnel.queueRequest(server.nodeId, 'download', server.uuid, path);
             if (res?.success && res.body) {
               const text = Buffer.isBuffer(res.body) ? res.body.toString('utf8') : String(res.body);
-              if (isValheimRconCfg(path)) {
-                const cfg = parseBepInExRconConfig(text);
+              const apply = (cfg) => {
                 if (cfg.port && !found.port) found.port = cfg.port;
                 if (cfg.password && !found.password) {
                   found.password = cfg.password;
                   finish();
-                  return;
+                  return true;
                 }
+                return false;
+              };
+              if (isValheimRconCfg(path)) {
+                if (apply(parseBepInExRconConfig(text))) return;
+              } else if (PALWORLD_CONFIG_PATHS.includes(path)) {
+                if (apply(parsePalworldConfig(text))) return;
+              } else if (ZOMBOID_CONFIG_PATHS.includes(path)) {
+                if (apply(parseZomboidConfig(text))) return;
               } else {
                 const password = path.endsWith('.properties') ? parsePropertiesPassword(text) : parseServerCfgPassword(text);
                 if (password && !found.password) {
@@ -579,11 +628,11 @@ async function sendConsoleCommand(ctx, server, command) {
  * container console (stdin). Returns any RCON output.
  */
 async function sendGameCommand(ctx, server, settings, command) {
-  if (styleFor(settings.preset) === 'valheim') {
+  if (usesRcon(settings.preset)) {
     const output = await rcon(ctx, server, settings, command);
-    // The mod replies "Unknown command <x>" rather than failing, so surface it.
+    // These RCON servers reply "Unknown command <x>" rather than failing.
     if (/unknown command/i.test(output)) {
-      throw new Error(`ValheimRcon rejected "${command}": ${output.trim().slice(0, 120)}`);
+      throw new Error(`RCON rejected "${command}": ${output.trim().slice(0, 120)}`);
     }
     return output;
   }
@@ -846,8 +895,10 @@ function captureConsole(serverId, { timeoutMs = 3500, quietMs = 1000 } = {}) {
 // ------------------------------------------------------------ check loop ---
 
 async function checkServer(ctx, server, global, per, now, force) {
+  const settings = resolveSettings(global, server, per);
   const managed = isManaged(global, per);
-  if (!managed) return;
+  // Welcome and player tracking run even for servers that are not auto-managed.
+  if (!managed && !settings.welcomeEnabled) return;
 
   if (server.status !== 'running') {
     const state = await readState(ctx, server.id);
@@ -857,17 +908,18 @@ async function checkServer(ctx, server, global, per, now, force) {
     return;
   }
 
-  const settings = resolveSettings(global, server, per);
   const state = await readState(ctx, server.id);
 
-  if (state.stopIssuedAt && now - state.stopIssuedAt < settings.stopRetrySeconds * 1000) return;
-
-  let startedAt = state.startedAt;
-  if (!startedAt) {
-    startedAt = state.firstSeenRunning || now;
-    if (!state.firstSeenRunning) await writeState(ctx, server.id, { firstSeenRunning: now });
+  // Auto-stop guards only apply to managed servers.
+  if (managed) {
+    if (state.stopIssuedAt && now - state.stopIssuedAt < settings.stopRetrySeconds * 1000) return;
+    let startedAt = state.startedAt;
+    if (!startedAt) {
+      startedAt = state.firstSeenRunning || now;
+      if (!state.firstSeenRunning) await writeState(ctx, server.id, { firstSeenRunning: now });
+    }
+    if (settings.minServerUptimeSeconds > 0 && now - startedAt < settings.minServerUptimeSeconds * 1000) return;
   }
-  if (settings.minServerUptimeSeconds > 0 && now - startedAt < settings.minServerUptimeSeconds * 1000) return;
 
   if (!force && state.lastCheckAt && now - state.lastCheckAt < settings.checkIntervalSeconds * 1000) return;
   await writeState(ctx, server.id, { lastCheckAt: now });
@@ -913,6 +965,11 @@ async function checkServer(ctx, server, global, per, now, force) {
       }
     }
     await writeState(ctx, server.id, { knownPlayers: keys, welcomed: pruneWelcomed(welcomed) });
+  }
+
+  if (!managed) {
+    if (state.idleSince) await writeState(ctx, server.id, { idleSince: null });
+    return;
   }
 
   if (probe.count <= settings.emptyThreshold) {

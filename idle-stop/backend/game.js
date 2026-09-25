@@ -19,7 +19,15 @@ export function styleFor(preset) {
   if (preset === 'minecraft-java') return 'minecraft';
   if (preset === 'source' || preset === 'goldsrc') return 'source';
   if (preset === 'valheim') return 'valheim';
+  if (preset === 'palworld') return 'palworld';
+  if (preset === 'project-zomboid') return 'zomboid';
   return 'custom';
+}
+
+/** Games whose commands must go over RCON (no usable stdin console). */
+export function usesRcon(preset) {
+  const style = styleFor(preset);
+  return style === 'valheim' || style === 'palworld' || style === 'zomboid';
 }
 
 /** Valheim targets are a 17-digit SteamID or a player name. */
@@ -96,6 +104,32 @@ export function parsePlayers(style, output) {
     return players;
   }
 
+  if (style === 'palworld') {
+    // PalworldRcon `ShowPlayers`: "name,playeruid,steamid" header then rows.
+    const players = [];
+    for (const line of text.split('\n')) {
+      const value = line.trim();
+      if (!value || /^name\s*,\s*playeruid\s*,\s*steamid/i.test(value)) continue;
+      const parts = value.split(',');
+      if (parts.length < 3) continue;
+      const name = parts[0].trim();
+      if (!name) continue;
+      players.push({ name, steamid: parts[2].trim() || null });
+    }
+    return players;
+  }
+
+  if (style === 'zomboid') {
+    // Project Zomboid `players`: "Players connected (N):" then "-Name" lines.
+    const players = [];
+    for (const line of text.split('\n')) {
+      const value = line.trim().replace(/^[-*]\s*/, '');
+      if (!value || /^players connected/i.test(value)) continue;
+      players.push({ name: value });
+    }
+    return players;
+  }
+
   const players = [];
   for (const line of text.split('\n')) {
     const match = line.match(/^\s*#\s*(\d+)\s+"([^"]*)"\s+(\S+)(.*)$/);
@@ -154,6 +188,14 @@ export function buildKick(preset, player, reason) {
     const target = player.steamid ? normalizeValheimTarget(player.steamid) : normalizeValheimTarget(player.name);
     return `kick ${target}`;
   }
+  if (style === 'palworld') {
+    if (!player.steamid) throw new Error('Palworld kick needs a SteamID');
+    return `KickPlayer ${normalizeValheimTarget(player.steamid)}`;
+  }
+  if (style === 'zomboid') {
+    if (!player.name) throw new Error('Project Zomboid kick needs a player name');
+    return `kickuser ${cleanName(player.name)}`;
+  }
   throw new Error('kick is not supported for this game preset');
 }
 
@@ -174,6 +216,14 @@ export function buildBan(preset, player, minutes, reason) {
     const target = player.steamid ? normalizeValheimTarget(player.steamid) : normalizeValheimTarget(player.name);
     return `ban ${target}`;
   }
+  if (style === 'palworld') {
+    if (!player.steamid) throw new Error('Palworld ban needs a SteamID');
+    return `BanPlayer ${normalizeValheimTarget(player.steamid)}`;
+  }
+  if (style === 'zomboid') {
+    if (!player.name) throw new Error('Project Zomboid ban needs a player name');
+    return `banuser ${cleanName(player.name)}`;
+  }
   throw new Error('ban is not supported for this game preset');
 }
 
@@ -185,6 +235,8 @@ export function buildUnban(preset, target) {
   }
   if (style === 'minecraft') return `pardon ${cleanName(target.name || target.target)}`;
   if (style === 'valheim') return `unban ${normalizeValheimTarget(target.steamid || target.name || target.target)}`;
+  if (style === 'palworld') return `UnBanPlayer ${normalizeValheimTarget(target.steamid || target.name || target.target)}`;
+  if (style === 'zomboid') return `unbanuser ${cleanName(target.name || target.target)}`;
   throw new Error('unban is not supported for this game preset');
 }
 
@@ -196,12 +248,18 @@ export function buildWelcome(preset, playerName, message, serverName = '') {
   // ValheimRcon: `say` is a proximity shout that a just-spawned player may miss;
   // `showMessage` is a center-screen message delivered to everyone.
   if (style === 'valheim') return `showMessage ${text}`;
+  if (style === 'palworld') return `Broadcast ${text}`;
+  if (style === 'zomboid') return `servermsg "${text}"`;
   return `say ${text}`;
 }
 
 export function buildBroadcast(preset, message, serverName = '') {
   const text = cleanMessage(applyVars(message, { server: serverName }));
   if (!text) throw new Error('message is empty after sanitizing');
+  const style = styleFor(preset);
+  if (style === 'palworld') return `Broadcast ${text}`;
+  if (style === 'zomboid') return `servermsg "${text}"`;
+  if (style === 'valheim') return `showMessage ${text}`;
   return `say ${text}`;
 }
 

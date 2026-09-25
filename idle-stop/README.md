@@ -17,7 +17,7 @@ The panel does not send player join/leave events to plugins, so Idle Stop polls 
 | Source | Games | Gives |
 | --- | --- | --- |
 | **A2S query** | Source, CS2, GoldSrc, TF2, … | Player count and player names; no password |
-| **Source RCON** | Minecraft Java, Valheim (via ValheimRcon), custom games | `status` / `list` / `players` / `banlist` output; needs the RCON password |
+| **Source RCON** | Minecraft Java, Valheim (ValheimRcon), Palworld, Project Zomboid, custom games | `status` / `list` / `players` / `ShowPlayers` / `banlist` output; needs the RCON password |
 | **Console stream** | Valheim without RCON | Online SteamIDs, built from join/leave console lines |
 
 **Welcome on join** is real-time: the plugin subscribes to the server's live console output through the panel gateway (`ctx.wsGateway.addSseSubscriber`), matches the game's join line, and sends the welcome immediately (Minecraft `tell`, Source/GoldSrc `say`, Valheim `showMessage` — a centre-screen message, since Valheim's `say` is a proximity shout). For Valheim the join line only carries a SteamID, so the plugin resolves the name over RCON before welcoming. A poll-based player-list diff runs as a fallback if console output is unavailable or a line was missed, and the two paths are de-duplicated so no one is welcomed twice. Join patterns ship with each preset and can be overridden with `welcomeJoinRegex`.
@@ -30,6 +30,8 @@ Built-in presets:
 | `source` | `status` (or A2S) | `listid` | `quit` | `kick "#<userid>"` | `banid <min> <steamid> kick` / `removeid <steamid>` |
 | `goldsrc` | `status` (or A2S) | `listid` | `quit` | `kick "#<userid>"` | `banid <min> <steamid> kick` / `removeid <steamid>` |
 | `valheim` | `players` (ValheimRcon) or console roster | `banlist` | agent | `kick <steamid>` | `ban <steamid>` / `unban <steamid>` |
+| `palworld` | `ShowPlayers` (CSV) | *(local records)* | agent | `KickPlayer <steamid>` | `BanPlayer <steamid>` / `UnBanPlayer <steamid>` |
+| `project-zomboid` | `players` | *(local records)* | agent | `kickuser <name>` | `banuser <name>` / `unbanuser <name>` |
 | `custom` | configure | configure | configure | configure | configure |
 
 `gamePreset: auto` guesses the preset from the server's startup command and environment.
@@ -44,6 +46,15 @@ Recommended: install the [ValheimRcon](https://thunderstore.io/c/valheim/p/Trist
 - **Welcome**: `say <message>` (server-wide — Valheim has no per-player message command).
 
 The preset uses `rconPortOffset: 2`, so the RCON port is the game port + 2 (Valheim default `2456` → `2458`) unless you set `rconPort`. The password is auto-detected from `BepInEx/config/org.tristan.rcon.cfg` (the port there is used when set), or you can type it in the server tab. Note: a ValheimRcon password is mandatory — an empty password disables the mod.
+
+### Palworld / Project Zomboid
+
+Both use Source-RCON, which the plugin speaks directly. Commands go over RCON (not stdin).
+
+- **Palworld**: enable RCON in `PalWorldSettings.ini` (`RCONEnabled=True`, `RCONPort=25575`, `AdminPassword=…`) and restart. Player list `ShowPlayers`, kick/ban/unban `KickPlayer`/`BanPlayer`/`UnBanPlayer <steamid>`, welcome `Broadcast`. The default RCON port is `25575`; the password is auto-detected from `Pal/Saved/Config/{Windows,Linux}Server/PalWorldSettings.ini`.
+- **Project Zomboid**: enable RCON in `Zomboid/Server/<name>.ini` (`RCONPort=27015`, `RCONPassword=…`) and restart. Player list `players`, kick/ban/unban `kickuser`/`banuser`/`unbanuser <name>`, welcome `servermsg "<text>"`. The default RCON port is `27015`; the password is auto-detected from `Zomboid/Server/servertest.ini` (set it in the tab if your ini has another name).
+
+Neither game exposes a ban-list command, so the Bans panel shows the plugin's own records; set `rconHost`/`rconPort`/`rconPassword` in the server tab if auto-detection doesn't find them.
 
 **Without the mod** (vanilla Valheim has no query or RCON) the plugin falls back to the console roster: it builds the online list from `Got connection SteamID <id>` (join) and `Closing socket <id>` (leave), configurable with `rosterJoinRegex` / `rosterLeaveRegex`. Rows then show **SteamIDs, not names** — vanilla Valheim does not log names. Because a plugin cannot know who was already online before it started, this fallback roster becomes **authoritative only after the panel observes the server start** (`server:started`); until then **auto-stop is paused** so a populated server is never stopped on incomplete data.
 
