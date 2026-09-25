@@ -621,7 +621,7 @@ function IdleStopTab(props: { serverId?: string }): React.ReactElement {
 export default {
   manifest: {
     name: 'idle-stop',
-    version: '1.10.8',
+    version: '1.10.9',
     displayName: 'Idle Stop & Player Admin',
     description: 'Auto-stop empty servers, plus player list, kick, ban, ban list and welcome messages.',
     author: 'SpiritNetworks',

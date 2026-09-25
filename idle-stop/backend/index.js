@@ -923,22 +923,43 @@ function onConsoleOutput(ctx, serverId, dataJson) {
 
 /** Nuclear Option console join gives a SteamID; welcome via send-chat-message. */
 async function welcomeNuclearBySteamId(ctx, serverId, steamid, settings) {
-  // The join line is printed while the client is still loading. Nuclear Option
-  // reaches "Loaded - Running" around 40-45s after the join line, so wait past
-  // that or the chat is shown before the player is in-game and is missed.
-  await new Promise((resolve) => setTimeout(resolve, 60000));
-  const server = serverCache.get(serverId);
-  if (!server || server.status !== 'running') return;
-  let name = steamid;
-  if (settings.steamApiKey) {
+  // The join line is printed while the client is still loading (mission reaches
+  // "Loaded - Running" ~40s later). Try after that, but only send if the player
+  // is still connected, so a message is not broadcast to an empty server after
+  // they have already left. Retry once later in case the first check raced.
+  const isOnline = async () => {
+    const server = serverCache.get(serverId);
+    if (!server || server.status !== 'running') return false;
+    const { host, port } = nuclearEndpoint(server, settings);
+    if (!host || !port) return false;
     try {
-      const names = await resolveSteamNames([steamid], settings.steamApiKey);
-      if (names[steamid]) name = names[steamid];
+      const res = await nuclearCall(serverId, { host, port, name: 'get-player-list', args: [], timeoutMs: 10000, requireResponse: true });
+      const list = res.body && Array.isArray(res.body.Players) ? res.body.Players : [];
+      return list.some((p) => String(p.steamId) === steamid);
     } catch {
-      /* fall back to the SteamID */
+      return false;
     }
-  }
-  await welcomeFromConsole(ctx, serverId, name, settings);
+  };
+
+  const deliver = async () => {
+    if (!(await isOnline())) return false;
+    let name = steamid;
+    if (settings.steamApiKey) {
+      try {
+        const names = await resolveSteamNames([steamid], settings.steamApiKey);
+        if (names[steamid]) name = names[steamid];
+      } catch {
+        /* fall back to the SteamID */
+      }
+    }
+    await welcomeFromConsole(ctx, serverId, name, settings);
+    return true;
+  };
+
+  await new Promise((resolve) => setTimeout(resolve, 45000));
+  if (await deliver()) return;
+  await new Promise((resolve) => setTimeout(resolve, 25000));
+  await deliver();
 }
 
 /**
