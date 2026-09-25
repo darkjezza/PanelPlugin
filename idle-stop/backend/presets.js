@@ -171,7 +171,7 @@ export function resolveSettings(global, server, per = {}) {
 
   return {
     preset: presetName,
-    graceSeconds: Math.max(0, toNumber(pick('graceSeconds', 300), 300)),
+    graceSeconds: Math.max(0, toNumber(pick('graceSeconds', 180), 180)),
     emptyThreshold: Math.max(0, toNumber(pick('emptyThreshold', 0), 0)),
     minServerUptimeSeconds: Math.max(0, toNumber(pick('minServerUptimeSeconds', 180), 180)),
     checkIntervalSeconds: Math.max(15, toNumber(pick('checkIntervalSeconds', 30), 30)),

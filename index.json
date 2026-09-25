@@ -6,9 +6,9 @@
       "displayName": "Idle Stop & Player Admin",
       "description": "Stops a server when its last player leaves, plus a live player list, kick, ban, ban list, clear-bans/clear-session reset and on-join welcome messages. Supports Source/GoldSrc (A2S/RCON), Minecraft (RCON), Valheim (ValheimRcon), Palworld, Project Zomboid (Source-RCON) and Nuclear Option (TCP remote commands).",
       "author": "SpiritNetworks",
-      "version": "1.10.10",
-      "downloadUrl": "https://raw.githubusercontent.com/darkjezza/PanelPlugin/main/idle-stop-1.10.10.catpkg.zip",
-      "sha256": "4f32fc211be0d40e6cf920ff38e803dbc06fec0c603fb3231c14d94a718399e9",
+      "version": "1.10.11",
+      "downloadUrl": "https://raw.githubusercontent.com/darkjezza/PanelPlugin/main/idle-stop-1.10.11.catpkg.zip",
+      "sha256": "712071bc66989827e6999d645d8f5329c3a5843d48a4edea30b778febd0964f8",
       "tags": [
         "servers",
         "automation",
