@@ -151,6 +151,30 @@ const consoleCaptures = new Map();
 const runtimeInfo = new Map();
 // Last good Nuclear Option player list, reused while get-player-list is flaky.
 const nuclearListCache = new Map();
+const NUCLEAR_LIST_TTL_MS = 30000;
+// Serialize Nuclear Option TCP commands per server: the game's remote server
+// drops connections if several arrive at once (its log shows "Blocking...").
+const nuclearLocks = new Map();
+
+async function nuclearLock(serverId) {
+  const prev = nuclearLocks.get(serverId) || Promise.resolve();
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  nuclearLocks.set(serverId, prev.then(() => gate));
+  await prev;
+  return release;
+}
+
+async function nuclearCall(serverId, opts) {
+  const release = await nuclearLock(serverId);
+  try {
+    return await noCommand(opts);
+  } finally {
+    if (release) release();
+  }
+}
 
 function touchRuntime(serverId, patch) {
   runtimeInfo.set(serverId, { ...(runtimeInfo.get(serverId) || {}), ...patch });
@@ -585,13 +609,17 @@ async function probePlayers(ctx, server, settings) {
         listError: 'Nuclear Option remote commands need a reachable host and port (set rconHost/rconPort; default 7779)',
       };
     }
-    // get-player-list is flaky on some builds: retry, then reuse the last good
-    // list, then fall back to the A2S query count.
+    // Serve the cached list unless it is stale, to keep connections rare (the
+    // game's remote server drops them if they arrive too often/concurrently).
+    const cachedFresh = nuclearListCache.get(server.id);
+    if (cachedFresh && Date.now() - cachedFresh.at < NUCLEAR_LIST_TTL_MS) {
+      return { mode: 'list', players: cachedFresh.players, count: cachedFresh.players.length, source: 'nuclear', output: null, listError: null };
+    }
     let players = null;
     let listErr = null;
     for (let attempt = 0; attempt < 2 && players === null; attempt += 1) {
       try {
-        const res = await noCommand({ host, port, name: 'get-player-list', args: [], timeoutMs: 8000, requireResponse: true });
+        const res = await nuclearCall(server.id, { host, port, name: 'get-player-list', args: [], timeoutMs: 8000, requireResponse: true });
         const list = res.body && Array.isArray(res.body.Players) ? res.body.Players : [];
         players = list
           .map((p) => ({ steamid: String(p.steamId || '').trim(), name: String(p.steamId || '').trim(), faction: p.faction || null }))
@@ -752,8 +780,8 @@ async function sendNuclear(ctx, server, settings, name, args = []) {
   }
   // Require a response: if the game's remote-command listener is down, `socat`
   // accepts the TCP connection and closes it, which must be an error, not a
-  // silent "delivered".
-  const res = await noCommand({ host, port, name, args, timeoutMs: 15000, requireResponse: true });
+  // silent "delivered". Calls are serialized per server.
+  const res = await nuclearCall(server.id, { host, port, name, args, timeoutMs: 15000, requireResponse: true });
   return res.raw || `ok(${res.status})`;
 }
 
