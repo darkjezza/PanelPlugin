@@ -1,136 +1,155 @@
-# Idle Stop
+# Idle Stop & Player Admin
 
-A Catalyst panel plugin that **stops a game server once its last player leaves and the server stays empty** for a configurable grace period.
+A Catalyst panel plugin that:
 
-It is a panel plugin (not a game-server mod). It runs inside the panel process, checks running servers on a schedule, and asks the node to stop a server only when a player count of `0` is positively confirmed.
+- **stops a game server once its last player leaves** and it stays empty for a grace period;
+- shows a **live player list** and lets staff **kick** and **ban** players;
+- shows a **ban list** and lets staff **unban**;
+- offers a **nuclear reset** — kick everyone and clear all bans at once;
+- sends a **welcome message** to players as they join, with one global message for all servers and per-server overrides.
+
+It is a panel plugin (not a game-server mod). It runs inside the panel process and talks to each game server over its normal query/RCON ports.
 
 ## How it works
 
-The panel does not send player join/leave events to plugins, and it does not track player counts, so Idle Stop polls each managed server:
+The panel does not send player join/leave events to plugins, so Idle Stop polls each running server:
 
-| Player source | Games | Notes |
+| Source | Games | Gives |
 | --- | --- | --- |
-| **A2S query** | Source, CS2, GoldSrc, TF2, … | Unauthenticated UDP query; reads the player count directly from `A2S_INFO`. No password needed. |
-| **Source RCON** | Minecraft Java, custom games | Runs a command (`list`) over TCP and extracts the count with a regex. |
+| **A2S query** | Source, CS2, GoldSrc, TF2, … | Player count and player names; no password |
+| **Source RCON** | Minecraft Java, custom games | `status` / `list` / `listid` / `banlist` output; needs the RCON password |
+
+Joins are detected by diffing the player list between polls; the welcome is sent to each new player (Minecraft `tell`, Source/GoldSrc `say`).
 
 Built-in presets:
 
-| Preset | Count source | Stop command |
-| --- | --- | --- |
-| `minecraft-java` | RCON `list`, regex `There are (\d+) of a max` | `stop` |
-| `source` | A2S | `quit` |
-| `goldsrc` | A2S | `quit` |
-| `custom` | whatever you configure | whatever you configure |
+| Preset | Player list | Ban list | Stop | Kick | Ban / Unban |
+| --- | --- | --- | --- | --- | --- |
+| `minecraft-java` | `list` | `banlist` | `stop` | `kick <name>` | `ban <name>` / `pardon <name>` |
+| `source` | `status` (or A2S) | `listid` | `quit` | `kick "#<userid>"` | `banid <min> <steamid> kick` / `removeid <steamid>` |
+| `goldsrc` | `status` (or A2S) | `listid` | `quit` | `kick "#<userid>"` | `banid <min> <steamid> kick` / `removeid <steamid>` |
+| `custom` | configure | configure | configure | configure | configure |
 
 `gamePreset: auto` guesses the preset from the server's startup command and environment.
 
-Safety behavior:
+Safety:
 
-- A **query failure never stops a server.** Only a confirmed count at or below `emptyThreshold` counts as empty.
-- A server must have been seen running for `minServerUptimeSeconds` before it can be stopped.
-- Empty must persist for `graceSeconds` before the stop is issued.
-- After a stop is issued, another stop is not issued for `stopRetrySeconds`.
-- The plugin only touches servers you opt in (or all of them if you set `autoManage`).
+- A **query failure never stops a server and never kicks or bans anyone** — only a confirmed empty count for the whole grace period stops a server.
+- Every kick/ban/unban command is built from strict allowlisted shapes; player names, reasons and IDs are sanitized so they cannot chain extra console commands.
+- A server must be seen running for `minServerUptimeSeconds` before it can be stopped.
+- The nuclear reset requires an explicit `{ "confirm": "NUKE" }` and a second confirmation in the UI.
+- Only servers you opt in are touched (or all of them if `autoManage` is on).
 
 ## Requirements
 
-- The panel must be able to reach the server's A2S/RCON host and port. If a server's `primaryIp` is `0.0.0.0` (common when the panel and node are separate machines), set `queryHost` / `rconHost` to the node's public IP.
-- Minecraft: `enable-rcon=true` in `server.properties` (the plugin can auto-detect `rcon.password` through the file tunnel).
-- Source/GoldSrc: nothing, as long as the UDP game port is reachable.
+- The panel must reach the server's A2S/RCON ports. If a server's `primaryIp` is `0.0.0.0` (panel and node on different machines), set `queryHost` / `rconHost` to the node's public IP.
+- Minecraft: `enable-rcon=true` in `server.properties` (the plugin can auto-detect `rcon.password` through the file tunnel). Source/GoldSrc need nothing for A2S; RCON is needed for bans and for the richer `status` list.
 
 ## Install
 
-**Marketplace / local package**
+Pack the `idle-stop/` directory into a `.catpkg.zip` and install from **Admin → Plugins → Marketplace**, then enable it in **Admin → Plugins**. See the repository `index.json` for the marketplace entry.
 
-```
-my-plugin-… .catpkg.zip
+## User interface
+
+- **Admin → Idle Stop** — every server with status, managed state, last count, empty-since, last error; **Enable/Disable**, **Test**, **Run check now**, and **Broadcast welcome** to all running servers.
+- **Server → Idle Stop** — current state, **Players** (with Kick/Ban per player), **Bans** (local records with Unban, plus the server's live ban list), **Settings**, and a **Danger zone** nuclear reset.
+
+Both tabs are hook-free on purpose: a marketplace install loads `frontend/frontend.mjs`, whose own React copy makes hooks throw. The bundle is built from `frontend/index.ts`:
+
+```bash
+npm install react@19.3.0 esbuild     # at the repository root
+node build-ui.mjs                    # writes idle-stop/frontend/frontend.mjs
 ```
 
-Pack the `idle-stop/` directory and install from **Admin → Plugins → Marketplace** (or drop it into a `catalyst-plugins` checkout and rebuild the panel). Enable it in **Admin → Plugins**.
+React is pinned to 19 to match the panel (`react: ~19.3.0`). The bundle inlines React and has no bare imports.
 
 ## Configure
 
-Global defaults live in **Admin → Plugins → Idle Stop** (the manifest `config` block). Everything can be overridden per server through the API below.
+Global defaults live in **Admin → Plugins → Idle Stop**. Everything can be overridden per server through the API.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch for background checks. |
-| `autoManage` | `false` | Manage every running server by default. Leave off and opt in per server. |
+| `autoManage` | `false` | Manage every running server by default. |
 | `gamePreset` | `auto` | Default preset when auto-detection fails. |
 | `graceSeconds` | `300` | How long a server must stay empty before it is stopped. |
-| `emptyThreshold` | `0` | Player count at or below which the server is "empty". |
+| `emptyThreshold` | `0` | Player count at or below which the server is empty. |
 | `minServerUptimeSeconds` | `180` | Never stop a server within this many seconds of it being seen running. |
-| `checkIntervalSeconds` | `60` | Minimum seconds between checks per server. |
+| `checkIntervalSeconds` | `30` | Seconds between player checks (minimum 15). |
 | `stopMethod` | `console` | `console` sends a command; `agent` asks the node agent to stop the container. |
 | `stopCommand` | *(preset)* | Console stop command (`stop`, `quit`, …). |
 | `stopRetrySeconds` | `120` | Minimum gap between stop attempts. |
-| `playerSource` | `auto` | `auto`, `a2s` or `rcon`. |
-| `playerCommand` | *(preset)* | RCON command that prints the player list. |
-| `playerRegex` | *(preset)* | Regex with one capture group for the count. |
+| `playerSource` | `auto` | `auto`, `a2s` or `rcon` for the count. |
+| `playerCommand` / `playerRegex` | *(preset)* | RCON count command and count regex for custom games. |
+| `playerListCommand` | *(preset)* | RCON command that prints the player list. |
+| `banListCommand` | *(preset)* | RCON command that prints the ban list. |
 | `queryHost` / `queryPort` | *(server)* | A2S endpoint override. |
 | `rconHost` / `rconPort` | *(server)* | RCON endpoint override. |
-| `rconPassword` | *(empty)* | RCON password. Empty auto-detects from `server.properties` / `server.cfg`. |
+| `rconPassword` | *(empty)* | RCON password; empty auto-detects from `server.properties` / `server.cfg`. |
+| `welcomeEnabled` | `false` | Welcome players when first seen. |
+| `welcomeMessage` | `Welcome, {player}!` | `{player}` and `{server}` are replaced. |
+| `welcomeOnExisting` | `false` | Also welcome players already online when first seen. |
+| `defaultBanMinutes` | `0` | Default ban length (0 = permanent); Source/GoldSrc only. |
+| `defaultBanReason` | *(empty)* | Default ban reason. |
 
 ## API
 
-All routes are under `/api/plugins/idle-stop` and use normal session or API-key auth. Reads require `server.read`; writes require `server.write` on the calling user.
+All routes are under `/api/plugins/idle-stop` with normal session or API-key auth. Reads need `server.read`; writes need `server.write` on the calling user.
 
 ```bash
 BASE=https://panel.example.com/api/plugins/idle-stop
 AUTH="Authorization: Bearer $CATALYST_API_KEY"
 
-# List every server with its managed state and last count
-curl -H "$AUTH" "$BASE/servers"
-
-# Opt a server in and give it a 5-minute grace period
+curl -H "$AUTH" "$BASE/servers"                          # all servers + state
 curl -X PUT -H "$AUTH" -H 'Content-Type: application/json' \
-  -d '{"enabled":true,"graceSeconds":300}' "$BASE/servers/<serverId>"
+  -d '{"enabled":true,"graceSeconds":300,"welcomeEnabled":true}' "$BASE/servers/<id>"
+curl -X POST -H "$AUTH" "$BASE/servers/<id>/test"        # player probe (list or count)
 
-# Test the player count right now (returns count + raw query output)
-curl -X POST -H "$AUTH" "$BASE/servers/<serverId>/test"
+curl -H "$AUTH" "$BASE/servers/<id>/players"             # live player list
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"userid":"5","reason":"afk"}' "$BASE/servers/<id>/kick"
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"name":"Alex","steamid":"STEAM_0:1:123","minutes":0,"reason":"cheating"}' "$BASE/servers/<id>/ban"
+curl -H "$AUTH" "$BASE/servers/<id>/bans"                # local + live ban lists
+curl -X DELETE -H "$AUTH" "$BASE/servers/<id>/bans/<banId>"
+curl -X POST -H "$AUTH" "$BASE/servers/<id>/bans/clear"
 
-# Stop a server now, for testing
-curl -X POST -H "$AUTH" "$BASE/servers/<serverId>/stop"
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"confirm":"NUKE"}' "$BASE/servers/<id>/nuclear"   # kick all + clear all bans
 
-# Run the check cycle immediately instead of waiting for the next minute
-curl -X POST -H "$AUTH" "$BASE/tick"
+curl -X POST -H "$AUTH" -H 'Content-Type: application/json' \
+  -d '{"message":"Welcome, {player}!"}' "$BASE/welcome/broadcast"
+
+curl -X POST -H "$AUTH" "$BASE/tick"                     # run the check cycle now
 ```
 
-Example custom (RCON) override for a game without a preset:
-
-```json
-{
-  "enabled": true,
-  "playerSource": "rcon",
-  "playerCommand": "status",
-  "playerRegex": "players\\s*:\\s*(\\d+)",
-  "stopCommand": "quit",
-  "rconHost": "203.0.113.10",
-  "rconPort": 27015,
-  "graceSeconds": 600
-}
-```
-
-Per-server overrides are stored in the plugin's own collection (`idle_stop_servers`) and never echo the RCON password back.
+Ban records are stored in the plugin's `idle_stop_bans` collection and returned with `_id` for unban. Per-server settings live in `idle_stop_servers`, and the RCON password is never echoed back.
 
 ## Events
 
 | Event | Payload |
 | --- | --- |
-| `idle-stop:empty` | `{ serverId, playerCount, since }` — first time a server is seen empty. |
-| `idle-stop:stopped` | `{ serverId, playerCount, method }` — after a stop is issued. |
+| `idle-stop:empty` | `{ serverId, playerCount, since }` |
+| `idle-stop:stopped` | `{ serverId, playerCount, method }` |
+| `idle-stop:welcomed` | `{ serverId, player }` |
+| `idle-stop:kicked` | `{ serverId, target, reason }` |
+| `idle-stop:banned` | `{ serverId, target, minutes }` |
+| `idle-stop:unbanned` | `{ serverId, target }` |
+| `idle-stop:bans-cleared` | `{ serverId, count }` |
+| `idle-stop:nuclear` | `{ serverId, kicked, unbanned }` |
 
 ## Permissions
 
 | Permission | Why |
 | --- | --- |
-| `server.read` | List and read servers to check status and ports. |
-| `server.write` | Required on the caller for settings/stop routes. |
-| `files.read` | Read `server.properties` / `server.cfg` through the file tunnel to auto-detect the RCON password. |
+| `server.read` | List/read servers and probe players. |
+| `server.write` | Required on the caller for settings, kick/ban, clears and stops. |
+| `files.read` | Read `server.properties` / `server.cfg` through the file tunnel for RCON password auto-detection. |
 
 ## Limitations
 
-- Checks run at most **once per minute** (the panel's task scheduler is minute-granular), so a server can stay up for up to a minute past its grace period.
-- RCON/A2S cannot see players if the query port is not reachable from the panel; set `queryHost`/`rconHost` when the panel and node are separate machines.
+- Checks run every `checkIntervalSeconds` (minimum 15), so an empty server can stay up for up to one interval past its grace period, and a welcome can be delayed by up to one interval.
+- A2S cannot ban by SteamID and shows names only; Source/GoldSrc bans and SteamIDs need RCON.
+- Minecraft temporary bans depend on the server/plugins; vanilla `ban` is permanent.
 - Some games report bots as players; raise `emptyThreshold` if needed.
-- The `agent` stop method sends `stop_server` to the node agent. Prefer the default `console` method, which uses the game's own graceful shutdown command.
+- The `agent` stop method sends `stop_server` to the node agent; prefer the default `console` method.

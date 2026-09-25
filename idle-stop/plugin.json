@@ -1,8 +1,8 @@
 {
   "name": "idle-stop",
-  "version": "1.0.0",
-  "displayName": "Idle Stop",
-  "description": "Stops a game server automatically once the last player leaves and the server stays empty for a configurable grace period. Player counts come from an A2S query (Source/GoldSrc) or a Source-RCON command (Minecraft and custom games).",
+  "version": "1.2.0",
+  "displayName": "Idle Stop & Player Admin",
+  "description": "Stops a game server automatically once the last player leaves, and adds player administration: live player list, kick, ban, ban list, a nuclear reset, and a welcome message. Player data comes from an A2S query (Source/GoldSrc) or Source-RCON output (Minecraft and custom games).",
   "author": "SpiritNetworks",
   "catalystVersion": ">=1.0.0",
   "permissions": [
@@ -11,10 +11,14 @@
     "files.read"
   ],
   "permissionDescriptions": {
-    "server.write": "Required on the caller to change Idle Stop settings or stop an empty server through the Idle Stop API."
+    "server.write": "Required on the caller to change Idle Stop settings, kick/ban players, clear bans, or stop an empty server through the Idle Stop API."
   },
   "backend": {
     "entry": "backend/index.js"
+  },
+  "frontend": {
+    "entry": "frontend/index.ts",
+    "hasTabs": true
   },
   "config": {
     "enabled": {
@@ -50,8 +54,8 @@
     },
     "checkIntervalSeconds": {
       "type": "number",
-      "default": 60,
-      "description": "Minimum seconds between player checks per server (checks run at most once a minute)."
+      "default": 30,
+      "description": "Seconds between player checks (minimum 15)."
     },
     "stopMethod": {
       "type": "select",
@@ -72,18 +76,28 @@
     "playerSource": {
       "type": "select",
       "default": "auto",
-      "description": "How the online player count is read.",
+      "description": "How the online player count is read when no player list is available.",
       "options": ["auto", "a2s", "rcon"]
     },
     "playerCommand": {
       "type": "string",
       "default": "",
-      "description": "RCON command that prints the player list (Minecraft: list)."
+      "description": "RCON command that prints the player count (custom games)."
     },
     "playerRegex": {
       "type": "string",
       "default": "",
       "description": "Regex with one capture group for the player count, applied to the RCON output."
+    },
+    "playerListCommand": {
+      "type": "string",
+      "default": "",
+      "description": "RCON command whose output lists players (Source: status, Minecraft: list)."
+    },
+    "banListCommand": {
+      "type": "string",
+      "default": "",
+      "description": "RCON command whose output lists bans (Source: listid, Minecraft: banlist)."
     },
     "queryHost": {
       "type": "string",
@@ -109,6 +123,31 @@
       "type": "password",
       "default": "",
       "description": "RCON password. Leave empty to auto-detect from server.properties or server.cfg through the file tunnel."
+    },
+    "welcomeEnabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Welcome players when they are first seen online."
+    },
+    "welcomeMessage": {
+      "type": "text",
+      "default": "Welcome, {player}!",
+      "description": "Welcome text. {player} and {server} are replaced. Source/GoldSrc broadcast with say; Minecraft uses tell."
+    },
+    "welcomeOnExisting": {
+      "type": "boolean",
+      "default": false,
+      "description": "Also welcome players who were already online the first time the plugin saw them."
+    },
+    "defaultBanMinutes": {
+      "type": "number",
+      "default": 0,
+      "description": "Default ban length in minutes when the caller leaves it out (0 = permanent). Source/GoldSrc only."
+    },
+    "defaultBanReason": {
+      "type": "string",
+      "default": "",
+      "description": "Default ban reason when the caller leaves it out."
     }
   },
   "events": {
@@ -119,6 +158,30 @@
     "idle-stop:stopped": {
       "payload": { "serverId": "string", "playerCount": "number", "method": "string" },
       "description": "Emitted after the plugin issues a stop for an empty server."
+    },
+    "idle-stop:welcomed": {
+      "payload": { "serverId": "string", "player": "string" },
+      "description": "Emitted after a welcome message is sent to a joining player."
+    },
+    "idle-stop:kicked": {
+      "payload": { "serverId": "string", "target": "string", "reason": "string" },
+      "description": "Emitted after a kick command is sent."
+    },
+    "idle-stop:banned": {
+      "payload": { "serverId": "string", "target": "string", "minutes": "number" },
+      "description": "Emitted after a ban command is sent."
+    },
+    "idle-stop:unbanned": {
+      "payload": { "serverId": "string", "target": "string" },
+      "description": "Emitted after an unban command is sent."
+    },
+    "idle-stop:bans-cleared": {
+      "payload": { "serverId": "string", "count": "number" },
+      "description": "Emitted after the local ban list for a server is cleared."
+    },
+    "idle-stop:nuclear": {
+      "payload": { "serverId": "string", "kicked": "number", "unbanned": "number" },
+      "description": "Emitted after the nuclear reset (kick all + clear bans)."
     }
   },
   "dependencies": {}

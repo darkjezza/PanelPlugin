@@ -18,6 +18,8 @@ const INFO_REQUEST = 0x54;
 const RESPONSE_INFO = 0x49; // 'I'
 const RESPONSE_INFO_GOLDSRC = 0x6d; // 'm'
 const RESPONSE_CHALLENGE = 0x41; // 'A'
+const PLAYER_REQUEST = 0x55;
+const RESPONSE_PLAYER = 0x44; // 'D'
 const INFO_PAYLOAD = Buffer.concat([HEADER, Buffer.from([INFO_REQUEST]), Buffer.from('Source Engine Query\0', 'ascii')]);
 
 function sendQuery(host, port, payload, timeoutMs) {
@@ -95,4 +97,43 @@ export async function a2sPlayerCount({ host, port, timeoutMs = 3000 }) {
     reply = await sendQuery(host, port, Buffer.concat([INFO_PAYLOAD, challenge]), timeoutMs);
   }
   return parseA2SInfo(reply);
+}
+
+/** Parse an A2S_PLAYER reply buffer into [{ name, score, duration }]. */
+export function parseA2SPlayers(buf) {
+  if (buf.length < 6 || buf[4] !== RESPONSE_PLAYER) {
+    throw new Error(`unexpected A2S_PLAYER response type 0x${Number(buf[4] ?? 0).toString(16)}`);
+  }
+  const count = buf[5];
+  let o = 6;
+  const players = [];
+  for (let i = 0; i < count && o < buf.length; i += 1) {
+    o += 1; // player index
+    let end = buf.indexOf(0, o);
+    if (end === -1) end = buf.length;
+    const name = buf.toString('utf8', o, end);
+    o = end + 1;
+    let score = null;
+    let duration = null;
+    if (o + 8 <= buf.length) {
+      score = buf.readInt32LE(o);
+      duration = buf.readFloatLE(o + 4);
+      o += 8;
+    }
+    players.push({ name, score, duration });
+  }
+  return players;
+}
+
+/** Query a Source/GoldSrc server and return [{ name, score, duration }]. */
+export async function a2sPlayers({ host, port, timeoutMs = 3000 }) {
+  if (!host) throw new Error('A2S host is required');
+  const challengeReq = Buffer.concat([HEADER, Buffer.from([PLAYER_REQUEST, 0xff, 0xff, 0xff, 0xff])]);
+  const challengeReply = await sendQuery(host, port, challengeReq, timeoutMs);
+  if (!(challengeReply.length >= 9 && challengeReply[4] === RESPONSE_CHALLENGE)) {
+    throw new Error('A2S_PLAYER challenge was not returned');
+  }
+  const challenge = challengeReply.subarray(5, 9);
+  const reply = await sendQuery(host, port, Buffer.concat([HEADER, Buffer.from([PLAYER_REQUEST]), challenge]), timeoutMs);
+  return parseA2SPlayers(reply);
 }

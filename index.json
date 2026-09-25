@@ -3,13 +3,13 @@
   "plugins": [
     {
       "name": "idle-stop",
-      "displayName": "Idle Stop",
-      "description": "Stops a game server automatically once the last player leaves and the server stays empty for a configurable grace period.",
+      "displayName": "Idle Stop & Player Admin",
+      "description": "Stops a server when its last player leaves, and adds a live player list, kick, ban, ban list, nuclear reset and welcome messages. Includes admin and server tabs.",
       "author": "SpiritNetworks",
-      "version": "1.0.0",
-      "downloadUrl": "https://raw.githubusercontent.com/darkjezza/PanelPlugin/main/idle-stop-1.0.0.catpkg.zip",
-      "sha256": "c013f1386cd7205a2263d724612ae0b8cc65ace0ad5f539b545c854af91a1ea4",
-      "tags": ["servers", "automation"]
+      "version": "1.2.0",
+      "downloadUrl": "https://raw.githubusercontent.com/darkjezza/PanelPlugin/main/idle-stop-1.2.0.catpkg.zip",
+      "sha256": "fff24a42e026536b67d6a548650178f3da754846e08328f6d6f72b99ae2b9eb2",
+      "tags": ["servers", "automation", "moderation"]
     }
   ]
 }

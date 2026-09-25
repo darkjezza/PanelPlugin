@@ -11,6 +11,8 @@ export const PRESETS = {
     playerSource: 'rcon',
     playerCommand: 'list',
     playerRegex: 'There are (\\d+) of a max',
+    playerListCommand: 'list',
+    banListCommand: 'banlist',
     stopMethod: 'console',
     stopCommand: 'stop',
   },
@@ -18,6 +20,8 @@ export const PRESETS = {
     playerSource: 'a2s',
     playerCommand: '',
     playerRegex: '',
+    playerListCommand: 'status',
+    banListCommand: 'listid',
     stopMethod: 'console',
     stopCommand: 'quit',
   },
@@ -25,6 +29,8 @@ export const PRESETS = {
     playerSource: 'a2s',
     playerCommand: '',
     playerRegex: '',
+    playerListCommand: 'status',
+    banListCommand: 'listid',
     stopMethod: 'console',
     stopCommand: 'quit',
   },
@@ -41,6 +47,11 @@ function firstSet(...values) {
 function toNumber(value, fallback) {
   const n = Number(value);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function toBool(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback;
+  return value === true || value === 'true';
 }
 
 /** Guess a preset from the server's startup command and environment. */
@@ -82,7 +93,7 @@ export function resolveSettings(global, server, per = {}) {
   };
 
   let playerSource = pick('playerSource', 'auto');
-  let playerCommand = pick('playerCommand', '');
+  const playerCommand = pick('playerCommand', '');
   const playerRegex = pick('playerRegex', '');
   if (playerSource === 'auto') {
     playerSource = playerCommand && playerRegex ? 'rcon' : preset.playerSource || 'a2s';
@@ -93,18 +104,25 @@ export function resolveSettings(global, server, per = {}) {
     graceSeconds: Math.max(0, toNumber(pick('graceSeconds', 300), 300)),
     emptyThreshold: Math.max(0, toNumber(pick('emptyThreshold', 0), 0)),
     minServerUptimeSeconds: Math.max(0, toNumber(pick('minServerUptimeSeconds', 180), 180)),
-    checkIntervalSeconds: Math.max(30, toNumber(pick('checkIntervalSeconds', 60), 60)),
+    checkIntervalSeconds: Math.max(15, toNumber(pick('checkIntervalSeconds', 30), 30)),
     stopMethod: pick('stopMethod', 'console'),
     stopCommand: String(pick('stopCommand', preset.stopCommand || '') || '').trim(),
     stopRetrySeconds: Math.max(0, toNumber(pick('stopRetrySeconds', 120), 120)),
     playerSource,
     playerCommand: String(playerCommand || '').trim(),
     playerRegex: String(playerRegex || '').trim(),
+    playerListCommand: String(pick('playerListCommand', '') || '').trim(),
+    banListCommand: String(pick('banListCommand', '') || '').trim(),
     queryHost: String(pick('queryHost', '') || '').trim(),
     queryPort: Math.max(0, toNumber(pick('queryPort', 0), 0)),
     rconHost: String(pick('rconHost', '') || '').trim(),
     rconPort: Math.max(0, toNumber(pick('rconPort', 0), 0)),
     rconPassword: String(firstSet(per.rconPassword, global.rconPassword) || ''),
+    welcomeEnabled: toBool(pick('welcomeEnabled', false), false),
+    welcomeMessage: String(pick('welcomeMessage', 'Welcome, {player}!') || ''),
+    welcomeOnExisting: toBool(pick('welcomeOnExisting', false), false),
+    defaultBanMinutes: Math.max(0, toNumber(pick('defaultBanMinutes', 0), 0)),
+    defaultBanReason: String(pick('defaultBanReason', '') || '').trim(),
   };
 }
 

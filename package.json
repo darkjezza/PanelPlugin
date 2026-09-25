@@ -1,0 +1,26 @@
+{
+  "name": "panelplugin",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/darkjezza/PanelPlugin.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/darkjezza/PanelPlugin/issues"
+  },
+  "homepage": "https://github.com/darkjezza/PanelPlugin#readme",
+  "private": "true",
+  "dependencies": {
+    "esbuild": "^0.25.0",
+    "react": "^19.3.0"
+  }
+}
