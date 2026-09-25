@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "name": "idle-stop",
+      "displayName": "Idle Stop",
+      "description": "Stops a game server automatically once the last player leaves and the server stays empty for a configurable grace period.",
+      "author": "SpiritNetworks",
+      "version": "1.0.0",
+      "downloadUrl": "https://raw.githubusercontent.com/darkjezza/PanelPlugin/main/idle-stop-1.0.0.catpkg.zip",
+      "sha256": "c013f1386cd7205a2263d724612ae0b8cc65ace0ad5f539b545c854af91a1ea4",
+      "tags": ["servers", "automation"]
+    }
+  ]
+}
