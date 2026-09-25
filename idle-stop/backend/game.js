@@ -193,7 +193,9 @@ export function buildWelcome(preset, playerName, message, serverName = '') {
   if (!text) throw new Error('welcome message is empty after sanitizing');
   const style = styleFor(preset);
   if (style === 'minecraft') return `tell ${cleanName(playerName)} ${text}`;
-  // ValheimRcon only offers server-wide chat (`say`) and `showMessage`.
+  // ValheimRcon: `say` is a proximity shout that a just-spawned player may miss;
+  // `showMessage` is a center-screen message delivered to everyone.
+  if (style === 'valheim') return `showMessage ${text}`;
   return `say ${text}`;
 }
 

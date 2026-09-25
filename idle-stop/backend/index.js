@@ -181,7 +181,7 @@ function readGlobalConfig(ctx) {
     rconHost: get('rconHost', ''),
     rconPort: num(get('rconPort', 0), 0),
     rconPassword: get('rconPassword', ''),
-    welcomeEnabled: get('welcomeEnabled', false) === true,
+    welcomeEnabled: get('welcomeEnabled', true) === true,
     welcomeMessage: get('welcomeMessage', 'Welcome, {player}!'),
     welcomeOnExisting: get('welcomeOnExisting', false) === true,
     welcomeConsole: get('welcomeConsole', true) === true,
@@ -667,14 +667,41 @@ function onConsoleOutput(ctx, serverId, dataJson) {
   const re = compile(settings.welcomeJoinRegex);
   if (!re) return;
   const seen = new Set();
+  const isValheim = styleFor(settings.preset) === 'valheim';
   for (const line of lines) {
     const match = line.match(re);
     if (!match || !match[1]) continue;
-    const name = String(match[1]).trim();
-    if (!name || seen.has(name)) continue;
-    seen.add(name);
-    welcomeFromConsole(ctx, serverId, name, settings).catch(() => {});
+    const value = String(match[1]).trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    if (isValheim) {
+      welcomeValheimBySteamId(ctx, serverId, value, settings).catch(() => {});
+    } else {
+      welcomeFromConsole(ctx, serverId, value, settings).catch(() => {});
+    }
   }
+}
+
+/**
+ * Valheim's console join line only carries a SteamID; wait briefly for the
+ * player to appear in the RCON list, then welcome with their name.
+ */
+async function welcomeValheimBySteamId(ctx, serverId, steamid, settings) {
+  const server = serverCache.get(serverId);
+  if (!server || server.status !== 'running') return;
+  let name = null;
+  for (let attempt = 0; attempt < 6 && !name; attempt += 1) {
+    try {
+      const output = await rcon(ctx, server, settings, settings.playerListCommand || 'players');
+      const found = parsePlayers('valheim', output).find((p) => p.steamid === steamid);
+      if (found && found.name) name = found.name;
+    } catch {
+      /* retry */
+    }
+    if (!name) await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  if (name) await welcomeFromConsole(ctx, serverId, name, settings);
+  else ctx.logger.debug({ serverId, steamid }, 'idle-stop Valheim join name unresolved; poll fallback will handle it');
 }
 
 function ensureConsoleSub(ctx, serverId) {

@@ -50,6 +50,8 @@ export const PRESETS = {
     // ValheimRcon 1.6.2 defaults to a fixed port 2458 (not game port + 2).
     rconPortOffset: 0,
     rconDefaultPort: 2458,
+    // Console join line gives a SteamID; the name is resolved over RCON.
+    welcomeJoinRegex: 'Got connection SteamID (\\d+)',
     rosterJoinRegex: 'Got connection SteamID (\\d+)',
     rosterLeaveRegex: 'Closing socket (\\d+)',
   },

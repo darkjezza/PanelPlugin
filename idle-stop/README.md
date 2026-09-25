@@ -20,7 +20,7 @@ The panel does not send player join/leave events to plugins, so Idle Stop polls 
 | **Source RCON** | Minecraft Java, Valheim (via ValheimRcon), custom games | `status` / `list` / `players` / `banlist` output; needs the RCON password |
 | **Console stream** | Valheim without RCON | Online SteamIDs, built from join/leave console lines |
 
-**Welcome on join** is real-time: the plugin subscribes to the server's live console output through the panel gateway (`ctx.wsGateway.addSseSubscriber`), matches the game's join line, and sends the welcome immediately (Minecraft `tell`, Source/GoldSrc `say`). A poll-based player-list diff runs as a fallback if console output is unavailable or a line was missed, and the two paths are de-duplicated so no one is welcomed twice. Join patterns ship with each preset and can be overridden with `welcomeJoinRegex`.
+**Welcome on join** is real-time: the plugin subscribes to the server's live console output through the panel gateway (`ctx.wsGateway.addSseSubscriber`), matches the game's join line, and sends the welcome immediately (Minecraft `tell`, Source/GoldSrc `say`, Valheim `showMessage` — a centre-screen message, since Valheim's `say` is a proximity shout). For Valheim the join line only carries a SteamID, so the plugin resolves the name over RCON before welcoming. A poll-based player-list diff runs as a fallback if console output is unavailable or a line was missed, and the two paths are de-duplicated so no one is welcomed twice. Join patterns ship with each preset and can be overridden with `welcomeJoinRegex`.
 
 Built-in presets:
 
