@@ -437,6 +437,9 @@ function mountServer(root: HTMLElement, serverId: string): void {
     const welcomeMessage = inputEl({ type: 'text', value: st.welcomeMessage || 'Welcome, {player}!' });
     const welcomeOnExisting = inputEl({ type: 'checkbox' }) as HTMLInputElement;
     welcomeOnExisting.checked = Boolean(st.welcomeOnExisting);
+    const welcomeConsole = inputEl({ type: 'checkbox' }) as HTMLInputElement;
+    welcomeConsole.checked = st.welcomeConsole !== false;
+    const welcomeJoinRegex = inputEl({ type: 'text', value: st.welcomeJoinRegex || '', placeholder: 'preset join pattern' });
     const banMinutes = inputEl({ type: 'number', min: '0', value: String(st.defaultBanMinutes ?? 0) });
     const banReason = inputEl({ type: 'text', value: st.defaultBanReason || '' });
 
@@ -459,6 +462,8 @@ function mountServer(root: HTMLElement, serverId: string): void {
       field('RCON password', rconPassword),
       field('Welcome players (on join)', welcomeEnabled),
       field('Welcome message', welcomeMessage),
+      field('Instant welcome from console', welcomeConsole),
+      field('Join regex (console)', welcomeJoinRegex),
       field('Welcome already-online players', welcomeOnExisting),
       field('Default ban minutes', banMinutes),
       field('Default ban reason', banReason),
@@ -487,6 +492,8 @@ function mountServer(root: HTMLElement, serverId: string): void {
           welcomeEnabled: welcomeEnabled.checked,
           welcomeMessage: welcomeMessage.value,
           welcomeOnExisting: welcomeOnExisting.checked,
+          welcomeConsole: welcomeConsole.checked,
+          welcomeJoinRegex: welcomeJoinRegex.value,
           defaultBanMinutes: Number(banMinutes.value),
           defaultBanReason: banReason.value,
         };
@@ -567,7 +574,7 @@ function IdleStopTab(props: { serverId?: string }): React.ReactElement {
 export default {
   manifest: {
     name: 'idle-stop',
-    version: '1.2.0',
+    version: '1.3.1',
     displayName: 'Idle Stop & Player Admin',
     description: 'Auto-stop empty servers, plus player list, kick, ban, ban list and welcome messages.',
     author: 'SpiritNetworks',

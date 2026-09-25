@@ -15,6 +15,7 @@ export const PRESETS = {
     banListCommand: 'banlist',
     stopMethod: 'console',
     stopCommand: 'stop',
+    welcomeJoinRegex: '([A-Za-z0-9_.]{1,32}) joined the game',
   },
   source: {
     playerSource: 'a2s',
@@ -24,6 +25,7 @@ export const PRESETS = {
     banListCommand: 'listid',
     stopMethod: 'console',
     stopCommand: 'quit',
+    welcomeJoinRegex: '"([^"]{1,64})<\\d+><[^>]*><>" entered the game',
   },
   goldsrc: {
     playerSource: 'a2s',
@@ -33,6 +35,7 @@ export const PRESETS = {
     banListCommand: 'listid',
     stopMethod: 'console',
     stopCommand: 'quit',
+    welcomeJoinRegex: '"([^"]{1,64})<\\d+><[^>]*><>" entered the game',
   },
   custom: {},
 };
@@ -121,6 +124,8 @@ export function resolveSettings(global, server, per = {}) {
     welcomeEnabled: toBool(pick('welcomeEnabled', false), false),
     welcomeMessage: String(pick('welcomeMessage', 'Welcome, {player}!') || ''),
     welcomeOnExisting: toBool(pick('welcomeOnExisting', false), false),
+    welcomeConsole: toBool(pick('welcomeConsole', true), true),
+    welcomeJoinRegex: String(pick('welcomeJoinRegex', '') || ''),
     defaultBanMinutes: Math.max(0, toNumber(pick('defaultBanMinutes', 0), 0)),
     defaultBanReason: String(pick('defaultBanReason', '') || '').trim(),
   };

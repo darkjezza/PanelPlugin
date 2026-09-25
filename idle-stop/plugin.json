@@ -1,6 +1,6 @@
 {
   "name": "idle-stop",
-  "version": "1.2.0",
+  "version": "1.3.1",
   "displayName": "Idle Stop & Player Admin",
   "description": "Stops a game server automatically once the last player leaves, and adds player administration: live player list, kick, ban, ban list, a nuclear reset, and a welcome message. Player data comes from an A2S query (Source/GoldSrc) or Source-RCON output (Minecraft and custom games).",
   "author": "SpiritNetworks",
@@ -8,10 +8,12 @@
   "permissions": [
     "server.read",
     "server.write",
-    "files.read"
+    "files.read",
+    "idle-stop.console"
   ],
   "permissionDescriptions": {
-    "server.write": "Required on the caller to change Idle Stop settings, kick/ban players, clear bans, or stop an empty server through the Idle Stop API."
+    "server.write": "Required on the caller to change Idle Stop settings, kick/ban players, clear bans, or stop an empty server through the Idle Stop API.",
+    "idle-stop.console": "Reads server console output inside the panel to detect player joins so welcome messages can be sent the moment a player joins."
   },
   "backend": {
     "entry": "backend/index.js"
@@ -138,6 +140,16 @@
       "type": "boolean",
       "default": false,
       "description": "Also welcome players who were already online the first time the plugin saw them."
+    },
+    "welcomeConsole": {
+      "type": "boolean",
+      "default": true,
+      "description": "Welcome the moment a player joins by reading live console output. Falls back to polling if console output is unavailable."
+    },
+    "welcomeJoinRegex": {
+      "type": "string",
+      "default": "",
+      "description": "Regex matched against console lines to detect joins; capture group 1 is the player name. Empty uses the preset pattern."
     },
     "defaultBanMinutes": {
       "type": "number",

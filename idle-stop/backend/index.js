@@ -68,18 +68,49 @@ const ALLOWED_OVERRIDES = new Set([
   'welcomeEnabled',
   'welcomeMessage',
   'welcomeOnExisting',
+  'welcomeConsole',
+  'welcomeJoinRegex',
   'defaultBanMinutes',
   'defaultBanReason',
   'note',
 ]);
 
 const RC_CONFIG_PATHS = ['server.properties', 'server.cfg', 'cstrike/server.cfg', 'csgo/cfg/server.cfg', 'tf/cfg/server.cfg'];
+// File-tunnel requests can take up to 60s each; bound discovery hard and cache
+// the result so a user-facing request never hangs into a proxy timeout.
+const RC_DISCOVERY_TTL_MS = 5 * 60 * 1000;
+const RC_DISCOVERY_TIMEOUT_MS = 5000;
+const PROBE_TIMEOUT_MS = 15000;
+const rconPasswordCache = new Map();
 const MAX_WELCOMES_PER_TICK = 20;
 const MAX_KICKS_PER_ACTION = 50;
 
 let ticking = false;
 let loopTimer = null;
 let disposed = false;
+
+// Live console subscriptions (serverId -> { unsubscribe, touch }) so welcomes
+// can fire on the join line instead of waiting for the next poll.
+const consoleSubs = new Map();
+const serverCache = new Map();
+const settingsCache = new Map();
+
+const WELCOME_DEDUP_MS = 5 * 60 * 1000;
+
+function recentlyWelcomed(welcomed, name) {
+  if (!name) return false;
+  const at = welcomed && welcomed[String(name).toLowerCase()];
+  return Boolean(at && Date.now() - at < WELCOME_DEDUP_MS);
+}
+
+function pruneWelcomed(welcomed) {
+  const now = Date.now();
+  const out = {};
+  for (const [key, at] of Object.entries(welcomed || {})) {
+    if (now - at < WELCOME_DEDUP_MS * 2) out[key] = at;
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------- config ---
 
@@ -116,6 +147,8 @@ function readGlobalConfig(ctx) {
     welcomeEnabled: get('welcomeEnabled', false) === true,
     welcomeMessage: get('welcomeMessage', 'Welcome, {player}!'),
     welcomeOnExisting: get('welcomeOnExisting', false) === true,
+    welcomeConsole: get('welcomeConsole', true) === true,
+    welcomeJoinRegex: get('welcomeJoinRegex', ''),
     defaultBanMinutes: num(get('defaultBanMinutes', 0), 0),
     defaultBanReason: get('defaultBanReason', ''),
   };
@@ -235,20 +268,40 @@ function parsePropertiesPassword(text) {
 }
 
 async function discoverRconPassword(ctx, server) {
-  if (!ctx.fileTunnel || typeof ctx.fileTunnel.queueRequest !== 'function') return null;
-  for (const path of RC_CONFIG_PATHS) {
-    try {
-      const res = await ctx.fileTunnel.queueRequest(server.nodeId, 'download', server.uuid, path);
-      if (res?.success && res.body) {
-        const text = Buffer.isBuffer(res.body) ? res.body.toString('utf8') : String(res.body);
-        const found = path.endsWith('.properties') ? parsePropertiesPassword(text) : parseServerCfgPassword(text);
-        if (found) return found;
-      }
-    } catch {
-      /* try the next candidate path */
-    }
+  const cached = rconPasswordCache.get(server.id);
+  if (cached && Date.now() - cached.at < RC_DISCOVERY_TTL_MS) return cached.password;
+  if (!ctx.fileTunnel || typeof ctx.fileTunnel.queueRequest !== 'function') {
+    rconPasswordCache.set(server.id, { password: null, at: Date.now() });
+    return null;
   }
-  return null;
+
+  const scan = async () => {
+    for (const path of RC_CONFIG_PATHS) {
+      try {
+        const res = await ctx.fileTunnel.queueRequest(server.nodeId, 'download', server.uuid, path);
+        if (res?.success && res.body) {
+          const text = Buffer.isBuffer(res.body) ? res.body.toString('utf8') : String(res.body);
+          const found = path.endsWith('.properties') ? parsePropertiesPassword(text) : parseServerCfgPassword(text);
+          if (found) return found;
+        }
+      } catch {
+        /* try the next candidate path */
+      }
+    }
+    return null;
+  };
+
+  let password = null;
+  try {
+    password = await Promise.race([
+      scan(),
+      new Promise((resolve) => setTimeout(() => resolve(null), RC_DISCOVERY_TIMEOUT_MS)),
+    ]);
+  } catch {
+    password = null;
+  }
+  rconPasswordCache.set(server.id, { password, at: Date.now() });
+  return password;
 }
 
 async function resolveRcon(ctx, server, settings) {
@@ -331,6 +384,16 @@ async function probePlayers(ctx, server, settings) {
   return { mode: 'count', players: [], count: res.count, source: res.source, output: res.output || null, listError: null };
 }
 
+/** probePlayers with a hard cap so an HTTP route cannot hang into a proxy 502. */
+async function probePlayersQuick(ctx, server, settings) {
+  return Promise.race([
+    probePlayers(ctx, server, settings),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('player probe timed out — check that queryHost/rconHost is reachable from the panel')), PROBE_TIMEOUT_MS),
+    ),
+  ]);
+}
+
 // ----------------------------------------------------------------- stops ---
 
 async function sendConsoleCommand(ctx, server, command) {
@@ -376,6 +439,88 @@ async function sendWelcome(ctx, server, settings, player) {
   await sendConsoleCommand(ctx, server, command);
   await writeState(ctx, server.id, { lastWelcomeAt: Date.now() });
   emit(ctx, 'idle-stop:welcomed', { serverId: server.id, player: player.name });
+}
+
+/**
+ * Send a welcome for a name detected on the live console. Deduped against the
+ * poll-based path so the same join is never welcomed twice.
+ */
+async function welcomeFromConsole(ctx, serverId, name, settings) {
+  const server = serverCache.get(serverId);
+  if (!server || server.status !== 'running') return;
+  const state = await readState(ctx, serverId);
+  const welcomed = state.welcomed || {};
+  if (recentlyWelcomed(welcomed, name)) return;
+  try {
+    const command = buildWelcome(settings.preset, name, settings.welcomeMessage, server.name);
+    await sendConsoleCommand(ctx, server, command);
+    welcomed[String(name).toLowerCase()] = Date.now();
+    await writeState(ctx, serverId, { welcomed: pruneWelcomed(welcomed), lastWelcomeAt: Date.now() });
+    emit(ctx, 'idle-stop:welcomed', { serverId, player: name });
+  } catch (err) {
+    ctx.logger.warn({ err: err?.message, serverId, player: name }, 'idle-stop console welcome failed');
+  }
+}
+
+/** Handle one live console event pushed by the gateway. Must never throw. */
+function onConsoleOutput(ctx, serverId, dataJson) {
+  const settings = settingsCache.get(serverId);
+  if (!settings || !settings.welcomeEnabled || !settings.welcomeConsole || !settings.welcomeJoinRegex) return;
+  let payload;
+  try {
+    payload = JSON.parse(typeof dataJson === 'string' ? dataJson : '');
+  } catch {
+    return;
+  }
+  const text = payload && typeof payload.data === 'string' ? payload.data : '';
+  if (!text) return;
+  let re;
+  try {
+    re = new RegExp(settings.welcomeJoinRegex);
+  } catch {
+    return;
+  }
+  const seen = new Set();
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(re);
+    if (!match || !match[1]) continue;
+    const name = String(match[1]).trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    welcomeFromConsole(ctx, serverId, name, settings).catch(() => {});
+  }
+}
+
+function ensureConsoleSub(ctx, serverId) {
+  const gateway = ctx.wsGateway;
+  if (!gateway || typeof gateway.addSseSubscriber !== 'function') return;
+  if (consoleSubs.has(serverId)) return;
+  try {
+    const handle = gateway.addSseSubscriber(serverId, (event, data) => {
+      if (event !== 'console_output') return;
+      try {
+        onConsoleOutput(ctx, serverId, data);
+      } catch {
+        /* console handling must never break the data path */
+      }
+    });
+    consoleSubs.set(serverId, handle);
+  } catch (err) {
+    ctx.logger.debug({ err: err?.message, serverId }, 'idle-stop console subscribe failed');
+  }
+}
+
+function clearConsoleSubs() {
+  for (const [, handle] of consoleSubs) {
+    try {
+      handle.unsubscribe?.();
+    } catch {
+      /* already gone */
+    }
+  }
+  consoleSubs.clear();
+  serverCache.clear();
+  settingsCache.clear();
 }
 
 // ------------------------------------------------------------ check loop ---
@@ -424,25 +569,30 @@ async function checkServer(ctx, server, global, per, now, force) {
     lastError: null,
   });
 
-  // Welcome players who joined since the previous poll.
+  // Welcome players who joined since the previous poll. This is the fallback
+  // for when the live console path is unavailable or missed a line.
   if (probe.mode === 'list' && settings.welcomeEnabled && probe.players.length) {
     const keys = probe.players.map(playerKey).filter(Boolean);
     const known = Array.isArray(state.knownPlayers) ? state.knownPlayers : null;
     const knownSet = new Set(known || []);
+    const welcomed = { ...(state.welcomed || {}) };
     let sent = 0;
     for (const player of probe.players) {
-      if (known && knownSet.has(playerKey(player))) continue;
+      const key = playerKey(player);
+      if (known && knownSet.has(key)) continue;
       if (!known && !settings.welcomeOnExisting) continue;
+      if (recentlyWelcomed(welcomed, player.name)) continue;
       if (sent >= MAX_WELCOMES_PER_TICK) break;
       try {
         await sendWelcome(ctx, server, settings, player);
+        if (player.name) welcomed[String(player.name).toLowerCase()] = Date.now();
         sent += 1;
       } catch (err) {
         ctx.logger.warn({ err: err?.message, serverId: server.id, player: player.name }, 'idle-stop welcome failed');
         break;
       }
     }
-    await writeState(ctx, server.id, { knownPlayers: keys });
+    await writeState(ctx, server.id, { knownPlayers: keys, welcomed: pruneWelcomed(welcomed) });
   }
 
   if (probe.count <= settings.emptyThreshold) {
@@ -464,13 +614,53 @@ async function tick(ctx, force = false) {
   if (ticking || disposed) return;
   ticking = true;
   try {
-    if (ctx.getConfig('enabled') === false) return;
+    if (ctx.getConfig('enabled') === false) {
+      clearConsoleSubs();
+      return;
+    }
     const global = readGlobalConfig(ctx);
-    if (!global.enabled) return;
+    if (!global.enabled) {
+      clearConsoleSubs();
+      return;
+    }
 
     const servers = await ctx.db.servers.findMany({ select: SERVER_SELECT, orderBy: { name: 'asc' } });
     const overrides = await loadOverrides(ctx);
     const now = Date.now();
+
+    // Refresh the cache used by the live-console path, then keep exactly the
+    // running servers that want on-join welcomes subscribed.
+    serverCache.clear();
+    settingsCache.clear();
+    const gateway = ctx.wsGateway;
+    const canConsole = gateway && typeof gateway.addSseSubscriber === 'function';
+    const activeConsole = new Set();
+    for (const server of servers) {
+      const per = overrides.get(server.id) || {};
+      const settings = resolveSettings(global, server, per);
+      serverCache.set(server.id, server);
+      settingsCache.set(server.id, settings);
+      if (canConsole && server.status === 'running' && settings.welcomeEnabled && settings.welcomeConsole && settings.welcomeJoinRegex) {
+        activeConsole.add(server.id);
+        ensureConsoleSub(ctx, server.id);
+      }
+    }
+    for (const [id, handle] of consoleSubs) {
+      if (!activeConsole.has(id)) {
+        try {
+          handle.unsubscribe?.();
+        } catch {
+          /* already gone */
+        }
+        consoleSubs.delete(id);
+      } else {
+        try {
+          handle.touch?.();
+        } catch {
+          /* already gone */
+        }
+      }
+    }
 
     for (const server of servers) {
       try {
@@ -633,7 +823,10 @@ export default {
         const overrides = await loadOverrides(ctx);
         const settings = resolveSettings(readGlobalConfig(ctx), server, overrides.get(server.id) || {});
         try {
-          const probe = await probePlayers(ctx, server, settings);
+          if (server.status !== 'running') {
+            return { success: false, serverId: server.id, error: `server is not running (${server.status})` };
+          }
+          const probe = await probePlayersQuick(ctx, server, settings);
           return {
             success: true,
             serverId: server.id,
@@ -646,7 +839,7 @@ export default {
             listError: probe.listError || null,
           };
         } catch (err) {
-          return reply.status(502).send({ success: false, serverId: server.id, error: err?.message || String(err) });
+          return { success: false, serverId: server.id, error: err?.message || String(err) };
         }
       }),
     });
@@ -661,7 +854,10 @@ export default {
         const overrides = await loadOverrides(ctx);
         const settings = resolveSettings(readGlobalConfig(ctx), server, overrides.get(server.id) || {});
         try {
-          const probe = await probePlayers(ctx, server, settings);
+          if (server.status !== 'running') {
+            return { success: false, serverId: server.id, error: `server is not running (${server.status})` };
+          }
+          const probe = await probePlayersQuick(ctx, server, settings);
           return {
             success: true,
             serverId: server.id,
@@ -673,7 +869,7 @@ export default {
             listError: probe.listError || null,
           };
         } catch (err) {
-          return reply.status(502).send({ success: false, serverId: server.id, error: err?.message || String(err) });
+          return { success: false, serverId: server.id, error: err?.message || String(err) };
         }
       }),
     });
@@ -823,7 +1019,10 @@ export default {
 
         // 1. Kick everyone currently online.
         try {
-          const probe = await probePlayers(ctx, server, settings);
+          if (server.status !== 'running') {
+            return { success: false, serverId: server.id, error: `server is not running (${server.status})` };
+          }
+          const probe = await probePlayersQuick(ctx, server, settings);
           for (const player of probe.players.slice(0, MAX_KICKS_PER_ACTION)) {
             try {
               await sendConsoleCommand(ctx, server, buildKick(settings.preset, player, 'Server reset'));
@@ -880,7 +1079,7 @@ export default {
           await performStop(ctx, server, settings, typeof state.lastCount === 'number' ? state.lastCount : 0);
           return { success: true, serverId: server.id, method: settings.stopMethod };
         } catch (err) {
-          return reply.status(502).send({ success: false, serverId: server.id, error: err?.message || String(err) });
+          return { success: false, serverId: server.id, error: err?.message || String(err) };
         }
       }),
     });
@@ -960,11 +1159,13 @@ export default {
     ctx.logger.info('Idle Stop disabled');
     disposed = true;
     stopLoop();
+    clearConsoleSubs();
   },
 
   async onUnload(ctx) {
     ctx.logger.info('Idle Stop unloaded');
     disposed = true;
     stopLoop();
+    clearConsoleSubs();
   },
 };

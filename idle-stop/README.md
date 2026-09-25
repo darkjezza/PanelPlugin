@@ -19,7 +19,7 @@ The panel does not send player join/leave events to plugins, so Idle Stop polls 
 | **A2S query** | Source, CS2, GoldSrc, TF2, … | Player count and player names; no password |
 | **Source RCON** | Minecraft Java, custom games | `status` / `list` / `listid` / `banlist` output; needs the RCON password |
 
-Joins are detected by diffing the player list between polls; the welcome is sent to each new player (Minecraft `tell`, Source/GoldSrc `say`).
+**Welcome on join** is real-time: the plugin subscribes to the server's live console output through the panel gateway (`ctx.wsGateway.addSseSubscriber`), matches the game's join line, and sends the welcome immediately (Minecraft `tell`, Source/GoldSrc `say`). A poll-based player-list diff runs as a fallback if console output is unavailable or a line was missed, and the two paths are de-duplicated so no one is welcomed twice. Join patterns ship with each preset and can be overridden with `welcomeJoinRegex`.
 
 Built-in presets:
 
@@ -89,6 +89,8 @@ Global defaults live in **Admin → Plugins → Idle Stop**. Everything can be o
 | `welcomeEnabled` | `false` | Welcome players when first seen. |
 | `welcomeMessage` | `Welcome, {player}!` | `{player}` and `{server}` are replaced. |
 | `welcomeOnExisting` | `false` | Also welcome players already online when first seen. |
+| `welcomeConsole` | `true` | Welcome instantly from live console output; polling is the fallback. |
+| `welcomeJoinRegex` | *(preset)* | Regex matched against console lines; capture group 1 is the player name. |
 | `defaultBanMinutes` | `0` | Default ban length (0 = permanent); Source/GoldSrc only. |
 | `defaultBanReason` | *(empty)* | Default ban reason. |
 
@@ -148,8 +150,9 @@ Ban records are stored in the plugin's `idle_stop_bans` collection and returned 
 
 ## Limitations
 
-- Checks run every `checkIntervalSeconds` (minimum 15), so an empty server can stay up for up to one interval past its grace period, and a welcome can be delayed by up to one interval.
+- Checks run every `checkIntervalSeconds` (minimum 15), so an empty server can stay up for up to one interval past its grace period. Welcomes are normally instant from the console; the polling fallback can be delayed by up to one interval.
 - A2S cannot ban by SteamID and shows names only; Source/GoldSrc bans and SteamIDs need RCON.
 - Minecraft temporary bans depend on the server/plugins; vanilla `ban` is permanent.
+- If the Players panel reports a timeout or "no reachable endpoint", set `queryHost`/`queryPort` (A2S) or `rconHost`/`rconPort` to an address the panel can reach. RCON password discovery is cached for 5 minutes and bounded to 5 seconds so it never blocks a request.
 - Some games report bots as players; raise `emptyThreshold` if needed.
 - The `agent` stop method sends `stop_server` to the node agent; prefer the default `console` method.

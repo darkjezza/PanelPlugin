@@ -4,11 +4,11 @@
     {
       "name": "idle-stop",
       "displayName": "Idle Stop & Player Admin",
-      "description": "Stops a server when its last player leaves, and adds a live player list, kick, ban, ban list, nuclear reset and welcome messages. Includes admin and server tabs.",
+      "description": "Stops a server when its last player leaves, and adds a live player list, kick, ban, ban list, nuclear reset and instant on-join welcome messages. Includes admin and server tabs.",
       "author": "SpiritNetworks",
-      "version": "1.2.0",
-      "downloadUrl": "https://raw.githubusercontent.com/darkjezza/PanelPlugin/main/idle-stop-1.2.0.catpkg.zip",
-      "sha256": "fff24a42e026536b67d6a548650178f3da754846e08328f6d6f72b99ae2b9eb2",
+      "version": "1.3.1",
+      "downloadUrl": "https://raw.githubusercontent.com/darkjezza/PanelPlugin/main/idle-stop-1.3.1.catpkg.zip",
+      "sha256": "174aa71d04606ff0353010e26841a2fe9c0897a1ac335f6deed4ea4c7d0320bf",
       "tags": ["servers", "automation", "moderation"]
     }
   ]
