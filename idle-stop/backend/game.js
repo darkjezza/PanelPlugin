@@ -169,9 +169,10 @@ export function buildBan(preset, player, minutes, reason) {
     return cleaned ? `ban ${name} ${cleaned}` : `ban ${name}`;
   }
   if (style === 'valheim') {
-    // banSteamId is unambiguous when we know the SteamID.
-    if (player.steamid) return `banSteamId ${normalizeValheimTarget(player.steamid)}`;
-    return `ban ${normalizeValheimTarget(player.name)}`;
+    // ValheimRcon 1.6.2 only ships `ban` (accepts a player name or SteamID);
+    // `banSteamId` exists only in newer builds, so do not use it here.
+    const target = player.steamid ? normalizeValheimTarget(player.steamid) : normalizeValheimTarget(player.name);
+    return `ban ${target}`;
   }
   throw new Error('ban is not supported for this game preset');
 }

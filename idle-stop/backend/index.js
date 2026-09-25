@@ -574,7 +574,12 @@ async function sendConsoleCommand(ctx, server, command) {
  */
 async function sendGameCommand(ctx, server, settings, command) {
   if (styleFor(settings.preset) === 'valheim') {
-    return rcon(ctx, server, settings, command);
+    const output = await rcon(ctx, server, settings, command);
+    // The mod replies "Unknown command <x>" rather than failing, so surface it.
+    if (/unknown command/i.test(output)) {
+      throw new Error(`ValheimRcon rejected "${command}": ${output.trim().slice(0, 120)}`);
+    }
+    return output;
   }
   await sendConsoleCommand(ctx, server, command);
   return null;
