@@ -1,0 +1,125 @@
+{
+  "name": "idle-stop",
+  "version": "1.0.0",
+  "displayName": "Idle Stop",
+  "description": "Stops a game server automatically once the last player leaves and the server stays empty for a configurable grace period. Player counts come from an A2S query (Source/GoldSrc) or a Source-RCON command (Minecraft and custom games).",
+  "author": "SpiritNetworks",
+  "catalystVersion": ">=1.0.0",
+  "permissions": [
+    "server.read",
+    "server.write",
+    "files.read"
+  ],
+  "permissionDescriptions": {
+    "server.write": "Required on the caller to change Idle Stop settings or stop an empty server through the Idle Stop API."
+  },
+  "backend": {
+    "entry": "backend/index.js"
+  },
+  "config": {
+    "enabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Master switch. When off, no background checks run at all."
+    },
+    "autoManage": {
+      "type": "boolean",
+      "default": false,
+      "description": "Manage every running server by default. Leave off and opt in per server for safety."
+    },
+    "gamePreset": {
+      "type": "select",
+      "default": "auto",
+      "description": "Default behavior for games not detected automatically.",
+      "options": ["auto", "minecraft-java", "source", "goldsrc", "custom"]
+    },
+    "graceSeconds": {
+      "type": "number",
+      "default": 300,
+      "description": "How long the server must stay at or below the empty threshold before it is stopped."
+    },
+    "emptyThreshold": {
+      "type": "number",
+      "default": 0,
+      "description": "Player count at or below which the server counts as empty."
+    },
+    "minServerUptimeSeconds": {
+      "type": "number",
+      "default": 180,
+      "description": "Never stop a server within this many seconds of it being seen running."
+    },
+    "checkIntervalSeconds": {
+      "type": "number",
+      "default": 60,
+      "description": "Minimum seconds between player checks per server (checks run at most once a minute)."
+    },
+    "stopMethod": {
+      "type": "select",
+      "default": "console",
+      "description": "How the server is stopped: send a console command, or ask the node agent to stop the container.",
+      "options": ["console", "agent"]
+    },
+    "stopCommand": {
+      "type": "string",
+      "default": "",
+      "description": "Console command used to stop the server. Empty uses the preset (stop for Minecraft, quit for Source/GoldSrc)."
+    },
+    "stopRetrySeconds": {
+      "type": "number",
+      "default": 120,
+      "description": "After a stop is issued, wait at least this long before issuing another."
+    },
+    "playerSource": {
+      "type": "select",
+      "default": "auto",
+      "description": "How the online player count is read.",
+      "options": ["auto", "a2s", "rcon"]
+    },
+    "playerCommand": {
+      "type": "string",
+      "default": "",
+      "description": "RCON command that prints the player list (Minecraft: list)."
+    },
+    "playerRegex": {
+      "type": "string",
+      "default": "",
+      "description": "Regex with one capture group for the player count, applied to the RCON output."
+    },
+    "queryHost": {
+      "type": "string",
+      "default": "",
+      "description": "A2S query host when it differs from the server's primary IP (required if the primary IP is 0.0.0.0)."
+    },
+    "queryPort": {
+      "type": "number",
+      "default": 0,
+      "description": "A2S query port. 0 uses the server's primary port."
+    },
+    "rconHost": {
+      "type": "string",
+      "default": "",
+      "description": "RCON host when it differs from the server's primary IP (required if the primary IP is 0.0.0.0)."
+    },
+    "rconPort": {
+      "type": "number",
+      "default": 0,
+      "description": "RCON port. 0 uses the server's primary port."
+    },
+    "rconPassword": {
+      "type": "password",
+      "default": "",
+      "description": "RCON password. Leave empty to auto-detect from server.properties or server.cfg through the file tunnel."
+    }
+  },
+  "events": {
+    "idle-stop:empty": {
+      "payload": { "serverId": "string", "playerCount": "number", "since": "string" },
+      "description": "Emitted when a managed server is first observed empty (grace period starts)."
+    },
+    "idle-stop:stopped": {
+      "payload": { "serverId": "string", "playerCount": "number", "method": "string" },
+      "description": "Emitted after the plugin issues a stop for an empty server."
+    }
+  },
+  "dependencies": {}
+}
