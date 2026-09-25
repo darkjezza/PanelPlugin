@@ -1,6 +1,6 @@
 {
   "name": "idle-stop",
-  "version": "1.6.7",
+  "version": "1.10.0",
   "displayName": "Idle Stop & Player Admin",
   "description": "Stops a game server automatically once the last player leaves, and adds player administration: live player list, kick, ban, ban list, a nuclear reset, and a welcome message. Player data comes from an A2S query (Source/GoldSrc) or Source-RCON output (Minecraft and custom games).",
   "author": "SpiritNetworks",
@@ -135,6 +135,11 @@
       "type": "password",
       "default": "",
       "description": "RCON password. Leave empty to auto-detect from server.properties or server.cfg through the file tunnel."
+    },
+    "steamApiKey": {
+      "type": "password",
+      "default": "",
+      "description": "Steam Web API key used to turn SteamIDs into player names (e.g. Nuclear Option). Get one at https://steamcommunity.com/dev/apikey."
     },
     "welcomeEnabled": {
       "type": "boolean",

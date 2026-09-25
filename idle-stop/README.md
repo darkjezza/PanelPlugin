@@ -37,6 +37,8 @@ Built-in presets:
 
 `gamePreset: auto` guesses the preset from the server's startup command and environment.
 
+**Stopping:** by default Idle Stop asks the **node agent** to stop the server — the same path as the panel's own Stop button (`stop_server`, acknowledged via `requestFromAgent`). Set `stopMethod: console` with a `stopCommand` if you'd rather send a specific in-game command instead (the presets carry sensible ones: Minecraft `stop`, Source/GoldSrc `quit`, ValheimRcon/Palworld/Zomboid as noted below). A failed stop is recorded as `lastStopError`.
+
 ### Valheim
 
 Recommended: install the [ValheimRcon](https://thunderstore.io/c/valheim/p/Tristan/ValheimRcon/) mod, which adds a Source-RCON server to Valheim (the same protocol Minecraft and Conan clients use). Idle Stop then treats Valheim like any other RCON game:
@@ -52,7 +54,7 @@ The preset uses `rconPortOffset: 2`, so the RCON port is the game port + 2 (Valh
 
 Nuclear Option's dedicated server has a JSON-over-TCP remote command interface. Start it with `-ServerRemoteCommands [port]` (default **7779**) and set that port in the server tab (`rconPort`, or leave `0` for 7779).
 
-- **Player list**: `get-player-list` — returns **SteamIDs + faction** only (the headless server doesn't cache display names, so rows show SteamIDs).
+- **Player list**: `get-player-list` — returns **SteamIDs + faction** (the headless server doesn't cache display names). Set the plugin's **Steam API key** (Steam Web API) and the plugin resolves those SteamIDs to persona names, so rows show real names. Without a key, rows show SteamIDs.
 - **Kick**: `kick-player <steamid>` (cannot rejoin until the server restarts).
 - **Ban / Unban**: `banlist-add <steamid> [reason]` / `banlist-remove <steamid>`; the Bans panel reads the server's `ban_list.txt`.
 - **Welcome**: `send-chat-message <text>` (broadcast to all chat; no per-player name available, so `{player}` resolves to the SteamID).

@@ -13,7 +13,8 @@ export const PRESETS = {
     playerRegex: 'There are (\\d+) of a max',
     playerListCommand: 'list',
     banListCommand: 'banlist',
-    stopMethod: 'console',
+    // Use the panel/agent stop by default; set stopMethod 'console' for a command.
+    stopMethod: 'agent',
     stopCommand: 'stop',
     welcomeJoinRegex: '([A-Za-z0-9_.]{1,32}) joined the game',
   },
@@ -23,7 +24,7 @@ export const PRESETS = {
     playerRegex: '',
     playerListCommand: 'status',
     banListCommand: 'listid',
-    stopMethod: 'console',
+    stopMethod: 'agent',
     stopCommand: 'quit',
     welcomeJoinRegex: '"([^"]{1,64})<\\d+><[^>]*><>" entered the game',
   },
@@ -33,7 +34,7 @@ export const PRESETS = {
     playerRegex: '',
     playerListCommand: 'status',
     banListCommand: 'listid',
-    stopMethod: 'console',
+    stopMethod: 'agent',
     stopCommand: 'quit',
     welcomeJoinRegex: '"([^"]{1,64})<\\d+><[^>]*><>" entered the game',
   },
@@ -62,7 +63,7 @@ export const PRESETS = {
     playerListCommand: 'ShowPlayers',
     banListCommand: '',
     stopMethod: 'agent',
-    stopCommand: '',
+    stopCommand: 'Shutdown',
     rconPortOffset: 0,
     rconDefaultPort: 25575,
   },
@@ -73,7 +74,7 @@ export const PRESETS = {
     playerListCommand: 'players',
     banListCommand: '',
     stopMethod: 'agent',
-    stopCommand: '',
+    stopCommand: 'quit',
     rconPortOffset: 0,
     rconDefaultPort: 27015,
   },
@@ -88,6 +89,8 @@ export const PRESETS = {
     stopCommand: '',
     rconPortOffset: 0,
     rconDefaultPort: 7779,
+    // Console join line; the SteamID is resolved to a name via the Steam API.
+    welcomeJoinRegex: 'Client with SteamID (\\d+) connected',
   },
   custom: {},
 };
@@ -190,6 +193,7 @@ export function resolveSettings(global, server, per = {}) {
     rconPortOffset: Math.max(0, toNumber(firstSet(per.rconPortOffset || undefined, global.rconPortOffset || undefined, preset.rconPortOffset), 0)),
     rconDefaultPort: Math.max(0, toNumber(firstSet(per.rconDefaultPort || undefined, preset.rconDefaultPort), 0)),
     rconPassword: String(firstSet(per.rconPassword, global.rconPassword) || ''),
+    steamApiKey: String(firstSet(per.steamApiKey, global.steamApiKey) || ''),
     welcomeEnabled: toBool(pick('welcomeEnabled', false), false),
     welcomeMessage: String(pick('welcomeMessage', 'Welcome, {player}!') || ''),
     welcomeOnExisting: toBool(pick('welcomeOnExisting', false), false),
@@ -202,6 +206,6 @@ export function resolveSettings(global, server, per = {}) {
 
 /** Remove secret material before echoing settings back to an API caller. */
 export function redactSettings(settings) {
-  const { rconPassword, ...rest } = settings;
-  return { ...rest, rconPasswordSet: Boolean(rconPassword) };
+  const { rconPassword, steamApiKey, ...rest } = settings;
+  return { ...rest, rconPasswordSet: Boolean(rconPassword), steamApiKeySet: Boolean(steamApiKey) };
 }

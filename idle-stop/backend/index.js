@@ -17,6 +17,7 @@
 import { a2sPlayerCount, a2sPlayers } from './a2s.js';
 import { noCommand } from './nocmd.js';
 import { rconExec } from './rcon.js';
+import { resolveSteamNames } from './steam.js';
 import { redactSettings, resolveSettings } from './presets.js';
 import {
   buildBan,
@@ -72,6 +73,7 @@ const ALLOWED_OVERRIDES = new Set([
   'rconPortOffset',
   'rconDefaultPort',
   'rconPassword',
+  'steamApiKey',
   'welcomeEnabled',
   'welcomeMessage',
   'welcomeOnExisting',
@@ -206,6 +208,7 @@ function readGlobalConfig(ctx) {
     rconHost: get('rconHost', ''),
     rconPort: num(get('rconPort', 0), 0),
     rconPassword: get('rconPassword', ''),
+    steamApiKey: get('steamApiKey', ''),
     welcomeEnabled: get('welcomeEnabled', true) === true,
     welcomeMessage: get('welcomeMessage', 'Welcome, {player}!'),
     welcomeOnExisting: get('welcomeOnExisting', false) === true,
@@ -572,14 +575,31 @@ async function probePlayers(ctx, server, settings) {
     try {
       const { host, port } = nuclearEndpoint(server, settings);
       if (!host || !port) throw new Error('Nuclear Option remote commands need a reachable host and port (set rconHost/rconPort; default 7779)');
-      const res = await noCommand({ host, port, name: 'get-player-list', args: [] });
+      const res = await noCommand({ host, port, name: 'get-player-list', args: [], timeoutMs: 15000, requireResponse: true });
       const list = res.body && Array.isArray(res.body.Players) ? res.body.Players : [];
-      const players = list
+      let players = list
         .map((p) => ({ steamid: String(p.steamId || '').trim(), name: String(p.steamId || '').trim(), faction: p.faction || null }))
         .filter((p) => p.steamid);
+      // The headless server only reports SteamIDs; look up persona names.
+      if (settings.steamApiKey && players.length) {
+        try {
+          const names = await resolveSteamNames(players.map((p) => p.steamid), settings.steamApiKey);
+          players = players.map((p) => ({ ...p, name: names[p.steamid] || p.name }));
+        } catch {
+          /* keep SteamIDs */
+        }
+      }
       return { mode: 'list', players, count: players.length, source: 'nuclear', output: null, listError: null };
     } catch (err) {
-      return { mode: 'count', players: [], count: 0, source: 'nuclear', output: null, listError: err?.message || String(err) };
+      // get-player-list can be unavailable; fall back to the A2S query count.
+      let count = 0;
+      try {
+        const { host, port } = resolveEndpoint(settings.queryHost, settings.queryPort, server);
+        if (host && port) count = (await a2sPlayerCount({ host, port })).players;
+      } catch {
+        /* ignore */
+      }
+      return { mode: 'count', players: [], count, source: 'a2s', output: null, listError: err?.message || String(err) };
     }
   }
 
@@ -706,31 +726,52 @@ async function sendNuclear(ctx, server, settings, name, args = []) {
   if (!host || !port) {
     throw new Error('Nuclear Option remote commands need a reachable host and port (set rconHost/rconPort; default 7779)');
   }
-  const res = await noCommand({ host, port, name, args });
+  const res = await noCommand({ host, port, name, args, timeoutMs: 15000 });
   return res.raw || `ok(${res.status})`;
 }
 
 async function sendAgentStop(ctx, server) {
   const gateway = ctx.wsGateway;
-  if (!gateway || typeof gateway.sendToAgent !== 'function') throw new Error('console gateway unavailable');
-  const ok = await gateway.sendToAgent(server.nodeId, {
-    type: 'stop_server',
-    serverId: server.id,
-    serverUuid: server.uuid,
-  });
-  if (!ok) throw new Error('agent is offline; stop request was not delivered');
+  if (!gateway) throw new Error('console gateway unavailable');
+  const message = { type: 'stop_server', serverId: server.id, serverUuid: server.uuid };
+  // Prefer the request/ack path so a rejected or ignored stop is a real error.
+  if (typeof gateway.requestFromAgent === 'function') {
+    let res;
+    try {
+      res = await gateway.requestFromAgent(server.nodeId, message, 25000);
+    } catch (err) {
+      throw new Error(`agent stop failed: ${err?.message || String(err)}`);
+    }
+    if (res && res.success === false) {
+      throw new Error(`agent rejected stop: ${res.error || 'unknown error'}`);
+    }
+    return;
+  }
+  if (typeof gateway.sendToAgent === 'function') {
+    const ok = await gateway.sendToAgent(server.nodeId, message);
+    if (!ok) throw new Error('agent is offline; stop request was not delivered');
+    return;
+  }
+  throw new Error('console gateway unavailable');
 }
 
 async function performStop(ctx, server, settings, playerCount) {
-  if (settings.stopMethod === 'agent') {
+  let method = settings.stopMethod;
+  if (method === 'agent' || !settings.stopCommand) {
+    // No usable console stop command -> ask the node agent to stop the container.
     await sendAgentStop(ctx, server);
+    method = 'agent';
   } else {
-    if (!settings.stopCommand) throw new Error('no stop command configured');
     await sendGameCommand(ctx, server, settings, settings.stopCommand);
   }
-  await writeState(ctx, server.id, { stopIssuedAt: Date.now(), lastStopAt: Date.now(), idleSince: null });
-  ctx.logger.info({ serverId: server.id, playerCount, method: settings.stopMethod }, 'idle-stop stopped an empty server');
-  emit(ctx, 'idle-stop:stopped', { serverId: server.id, playerCount, method: settings.stopMethod });
+  await writeState(ctx, server.id, {
+    stopIssuedAt: Date.now(),
+    lastStopAt: Date.now(),
+    idleSince: null,
+    lastStopError: null,
+  });
+  ctx.logger.info({ serverId: server.id, playerCount, method }, 'idle-stop stopped an empty server');
+  emit(ctx, 'idle-stop:stopped', { serverId: server.id, playerCount, method });
 }
 
 // ---------------------------------------------------------------- welcome ---
@@ -760,8 +801,13 @@ async function welcomeFromConsole(ctx, serverId, name, settings) {
   const welcomed = state.welcomed || {};
   if (recentlyWelcomed(welcomed, name)) return;
   try {
-    const commands = buildWelcomeCommands(settings.preset, name, settings.welcomeMessage, server.name);
-    for (const command of commands) await sendGameCommand(ctx, server, settings, command);
+    if (styleFor(settings.preset) === 'nuclear') {
+      const text = renderMessage(settings.welcomeMessage, { player: name, server: server.name });
+      if (text) await sendNuclear(ctx, server, settings, 'send-chat-message', [text]);
+    } else {
+      const commands = buildWelcomeCommands(settings.preset, name, settings.welcomeMessage, server.name);
+      for (const command of commands) await sendGameCommand(ctx, server, settings, command);
+    }
     welcomed[String(name).toLowerCase()] = Date.now();
     await writeState(ctx, serverId, { welcomed: pruneWelcomed(welcomed), lastWelcomeAt: Date.now() });
     touchRuntime(serverId, { lastWelcomePlayer: name, lastWelcomeError: null });
@@ -802,7 +848,7 @@ function onConsoleOutput(ctx, serverId, dataJson) {
   const re = compile(settings.welcomeJoinRegex);
   if (!re) return;
   const seen = new Set();
-  const isValheim = styleFor(settings.preset) === 'valheim';
+  const style = styleFor(settings.preset);
   for (const line of lines) {
     const match = line.match(re);
     if (!match || !match[1]) continue;
@@ -810,12 +856,30 @@ function onConsoleOutput(ctx, serverId, dataJson) {
     if (!value || seen.has(value)) continue;
     seen.add(value);
     touchRuntime(serverId, { lastJoinAt: Date.now(), lastJoinValue: value });
-    if (isValheim) {
+    if (style === 'valheim') {
       welcomeValheimBySteamId(ctx, serverId, value, settings).catch(() => {});
+    } else if (style === 'nuclear') {
+      welcomeNuclearBySteamId(ctx, serverId, value, settings).catch(() => {});
     } else {
       welcomeFromConsole(ctx, serverId, value, settings).catch(() => {});
     }
   }
+}
+
+/** Nuclear Option console join gives a SteamID; welcome via send-chat-message. */
+async function welcomeNuclearBySteamId(ctx, serverId, steamid, settings) {
+  const server = serverCache.get(serverId);
+  if (!server || server.status !== 'running') return;
+  let name = steamid;
+  if (settings.steamApiKey) {
+    try {
+      const names = await resolveSteamNames([steamid], settings.steamApiKey);
+      if (names[steamid]) name = names[steamid];
+    } catch {
+      /* fall back to the SteamID */
+    }
+  }
+  await welcomeFromConsole(ctx, serverId, name, settings);
 }
 
 /**
@@ -1053,7 +1117,7 @@ async function checkServer(ctx, server, global, per, now, force) {
     if (probe.authoritative === false) {
       // The roster is not known to be complete (Valheim before an observed
       // start). Never stop a server on unknown data.
-      if (state.idleSince) await writeState(ctx, server.id, { idleSince: null });
+  if (state.idleSince) await writeState(ctx, server.id, { idleSince: null, lastStopError: null });
       return;
     }
     if (!state.idleSince) {
@@ -1062,7 +1126,12 @@ async function checkServer(ctx, server, global, per, now, force) {
       return;
     }
     if (now - state.idleSince >= settings.graceSeconds * 1000) {
-      await performStop(ctx, server, settings, probe.count);
+      try {
+        await performStop(ctx, server, settings, probe.count);
+      } catch (err) {
+        await writeState(ctx, server.id, { lastStopError: err?.message || String(err), lastStopErrorAt: now });
+        throw err;
+      }
     }
     return;
   }
@@ -1222,6 +1291,7 @@ export default {
               lastSource: state.lastSource ?? null,
               idleSince: state.idleSince ?? null,
               lastStopAt: state.lastStopAt ?? null,
+              lastStopError: state.lastStopError ?? null,
               lastError: state.lastError ?? null,
               lastErrorAt: state.lastErrorAt ?? null,
             },

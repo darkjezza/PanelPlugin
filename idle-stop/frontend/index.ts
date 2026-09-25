@@ -437,6 +437,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
     const rconPort = inputEl({ type: 'number', min: '0', value: String(st.rconPort ?? 0) });
     const rconPortOffset = inputEl({ type: 'number', min: '0', value: String(st.rconPortOffset ?? 0) });
     const rconPassword = inputEl({ type: 'password', placeholder: st.rconPasswordSet ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (stored \u2014 type to replace)' : 'not set' });
+    const steamApiKey = inputEl({ type: 'password', placeholder: st.steamApiKeySet ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (stored)' : 'Steam Web API key' });
     const welcomeEnabled = inputEl({ type: 'checkbox' }) as HTMLInputElement;
     welcomeEnabled.checked = Boolean(st.welcomeEnabled);
     const welcomeMessage = inputEl({ type: 'text', value: st.welcomeMessage || 'Welcome, {player}!' });
@@ -466,6 +467,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
       field('RCON port', rconPort),
       field('RCON port offset', rconPortOffset),
       field('RCON password', rconPassword),
+      field('Steam API key (SteamID names)', steamApiKey),
       field('Welcome players (on join)', welcomeEnabled),
       field('Welcome message', welcomeMessage),
       field('Instant welcome from console', welcomeConsole),
@@ -505,6 +507,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
           defaultBanReason: banReason.value,
         };
         if (rconPassword.value) body.rconPassword = rconPassword.value;
+        if (steamApiKey.value) body.steamApiKey = steamApiKey.value;
         await api(`/servers/${encodeURIComponent(serverId)}`, { method: 'PUT', body });
         await load();
         status.textContent = 'Saved.';
@@ -603,7 +606,7 @@ function IdleStopTab(props: { serverId?: string }): React.ReactElement {
 export default {
   manifest: {
     name: 'idle-stop',
-    version: '1.6.7',
+    version: '1.10.0',
     displayName: 'Idle Stop & Player Admin',
     description: 'Auto-stop empty servers, plus player list, kick, ban, ban list and welcome messages.',
     author: 'SpiritNetworks',

@@ -16,7 +16,7 @@ import net from 'node:net';
 const SUCCESS = 2000;
 const MAX_BYTES = 8 * 1024 * 1024;
 
-export function noCommand({ host, port, name, args = [], timeoutMs = 6000 }) {
+export function noCommand({ host, port, name, args = [], timeoutMs = 6000, requireResponse = false }) {
   return new Promise((resolve, reject) => {
     if (!host) return reject(new Error('Nuclear Option command host is required'));
     if (!Number.isInteger(port) || port < 1 || port > 65535) return reject(new Error('Nuclear Option command port is invalid'));
@@ -28,7 +28,15 @@ export function noCommand({ host, port, name, args = [], timeoutMs = 6000 }) {
     const socket = net.createConnection({ host, port });
     socket.setNoDelay(true);
 
-    const timer = setTimeout(() => fail(new Error(`Nuclear Option command "${name}" timed out`)), timeoutMs);
+    // Some Nuclear Option builds execute a command but never write a response
+    // and just close the socket. Unless a response is required, count that as
+    // "delivered" instead of an error.
+    function noResponse(reason) {
+      if (requireResponse) return fail(new Error(`Nuclear Option command "${name}" ${reason}`));
+      done({ status: null, body: null, raw: '', closed: true });
+    }
+
+    const timer = setTimeout(() => noResponse('timed out'), timeoutMs);
 
     function cleanup() {
       clearTimeout(timer);
@@ -52,7 +60,7 @@ export function noCommand({ host, port, name, args = [], timeoutMs = 6000 }) {
 
     socket.on('error', fail);
     socket.on('close', () => {
-      if (!settled) fail(new Error(`Nuclear Option command "${name}" closed before responding`));
+      if (!settled) noResponse('closed before responding');
     });
     socket.on('connect', () => {
       const json = Buffer.from(JSON.stringify({ name, arguments: args.map(String) }), 'utf8');
