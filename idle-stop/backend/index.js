@@ -152,10 +152,10 @@ function touchRuntime(serverId, patch) {
   runtimeInfo.set(serverId, { ...(runtimeInfo.get(serverId) || {}), ...patch });
 }
 
-// De-dup window between the console and poll welcome paths. Short enough that
-// leaving and rejoining welcomes the player again, long enough to stop the two
-// paths double-welcoming one join.
-const WELCOME_DEDUP_MS = 60 * 1000;
+// De-dup window between the console and poll welcome paths. Must exceed the
+// poll interval (default 15s) so one join is not welcomed twice, but stay
+// short so leaving and rejoining welcomes the player again.
+const WELCOME_DEDUP_MS = 20 * 1000;
 
 function recentlyWelcomed(welcomed, name) {
   if (!name) return false;
@@ -693,9 +693,10 @@ async function sendGameCommand(ctx, server, settings, command) {
 }
 
 function nuclearEndpoint(server, settings) {
-  const parsed = parseHostPort(settings.rconHost);
-  const host = normalizeHost(parsed.host) || normalizeHost(server.primaryIp);
-  const port = Number(settings.rconPort) || parsed.port || Number(settings.rconDefaultPort) || 7779;
+  const rcon = parseHostPort(settings.rconHost);
+  const query = parseHostPort(settings.queryHost);
+  const host = normalizeHost(rcon.host) || normalizeHost(query.host) || normalizeHost(server.primaryIp);
+  const port = Number(settings.rconPort) || rcon.port || Number(settings.rconDefaultPort) || 7779;
   return { host, port };
 }
 
