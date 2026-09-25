@@ -364,7 +364,22 @@ function mountServer(root: HTMLElement, serverId: string): void {
         }
       }, 'muted');
 
-      body.push(el('div', { className: 'flex items-center gap-3 mb-3' }, [button('Refresh', () => refreshBans(), 'muted'), clearLocal, el('span', { className: 'text-sm text-gray-400', text: `${local.length} local ban(s)` })]));
+      const clearBanSession = button('Clear kick/ban session', async () => {
+        if (!window.confirm("Clear the server's session kicks and in-memory bans, and delete this plugin's ban records for this server?")) return;
+        clearBanSession.disabled = true;
+        try {
+          const r = await api(`/servers/${encodeURIComponent(serverId)}/clear-ban-session`, { method: 'POST' });
+          const res = r.result || {};
+          status.textContent = `Kick/ban session cleared: ${res.localCleared} record(s)${res.kicksCleared ? ', kicks cleared' : ''}${res.bansCleared ? ', bans cleared' : ''}${res.errors && res.errors.length ? `; errors: ${res.errors.join('; ')}` : ''}`;
+          await refreshBans();
+        } catch (err: any) {
+          status.textContent = `Error: ${err.message}`;
+        } finally {
+          clearBanSession.disabled = false;
+        }
+      }, 'danger');
+
+      body.push(el('div', { className: 'flex items-center gap-3 mb-3' }, [button('Refresh', () => refreshBans(), 'muted'), clearBanSession, clearLocal, el('span', { className: 'text-sm text-gray-400', text: `${local.length} local ban(s)` })]));
 
       if (local.length) {
         const rows = local.map((b) => {
@@ -606,7 +621,7 @@ function IdleStopTab(props: { serverId?: string }): React.ReactElement {
 export default {
   manifest: {
     name: 'idle-stop',
-    version: '1.10.5',
+    version: '1.10.8',
     displayName: 'Idle Stop & Player Admin',
     description: 'Auto-stop empty servers, plus player list, kick, ban, ban list and welcome messages.',
     author: 'SpiritNetworks',

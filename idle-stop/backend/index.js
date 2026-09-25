@@ -923,9 +923,10 @@ function onConsoleOutput(ctx, serverId, dataJson) {
 
 /** Nuclear Option console join gives a SteamID; welcome via send-chat-message. */
 async function welcomeNuclearBySteamId(ctx, serverId, steamid, settings) {
-  // The join line is printed while the client is still loading (map load can
-  // take a while), so wait until they are actually in-game before broadcasting.
-  await new Promise((resolve) => setTimeout(resolve, 30000));
+  // The join line is printed while the client is still loading. Nuclear Option
+  // reaches "Loaded - Running" around 40-45s after the join line, so wait past
+  // that or the chat is shown before the player is in-game and is missed.
+  await new Promise((resolve) => setTimeout(resolve, 60000));
   const server = serverCache.get(serverId);
   if (!server || server.status !== 'running') return;
   let name = steamid;
@@ -1661,8 +1662,15 @@ export default {
           let command;
           if (styleFor(settings.preset) === 'nuclear') {
             const steamid = record.steamid || record.target;
+            // Nuclear Option kick blocks rejoin until restart, so unbanning
+            // must also clear the player's session kick.
             await sendNuclear(ctx, server, settings, 'banlist-remove', [steamid]);
-            command = `banlist-remove ${steamid}`;
+            try {
+              await sendNuclear(ctx, server, settings, 'unkick-player', [steamid]);
+            } catch (err) {
+              ctx.logger.debug({ err: err?.message, serverId: server.id }, 'idle-stop unkick failed');
+            }
+            command = `banlist-remove ${steamid} + unkick-player ${steamid}`;
           } else {
             command = buildUnban(settings.preset, record);
             await sendGameCommand(ctx, server, settings, command);
@@ -1706,7 +1714,7 @@ export default {
         const result = { unbanned: 0, cleared: 0, errors: [] };
         const style = styleFor(settings.preset);
 
-        // 1. Best-effort removal of remote bans.
+        // 1. Best-effort removal of remote bans / session kicks.
         try {
           if (settings.banListCommand) {
             const output = await rcon(ctx, server, settings, settings.banListCommand);
@@ -1719,6 +1727,20 @@ export default {
               } catch (err) {
                 result.errors.push(`unban ${ban.target}: ${err.message}`);
               }
+            }
+          } else if (style === 'nuclear') {
+            // Nuclear Option: clear in-memory bans and the session kick list.
+            try {
+              await sendNuclear(ctx, server, settings, 'banlist-clear', []);
+              result.bansCleared = true;
+            } catch (err) {
+              result.errors.push(`banlist-clear: ${err.message}`);
+            }
+            try {
+              await sendNuclear(ctx, server, settings, 'clear-kicked-players', []);
+              result.kickedCleared = true;
+            } catch (err) {
+              result.errors.push(`clear-kicked-players: ${err.message}`);
             }
           }
         } catch (err) {
@@ -1745,10 +1767,57 @@ export default {
       handler: writeHandler(async (request, reply) => {
         const server = await findServer(ctx, request.params.id);
         if (!server) return reply.status(404).send({ success: false, error: 'server not found' });
+        const overrides = await loadOverrides(ctx);
+        const settings = resolveSettings(readGlobalConfig(ctx), server, overrides.get(server.id) || {});
+        // Nuclear Option: also clear the game's session kick list so kicked
+        // players can rejoin.
+        if (styleFor(settings.preset) === 'nuclear') {
+          try {
+            await sendNuclear(ctx, server, settings, 'clear-kicked-players', []);
+          } catch (err) {
+            ctx.logger.debug({ err: err?.message, serverId: server.id }, 'idle-stop clear-kicked-players failed');
+          }
+        }
         await clearServerSession(ctx, server.id);
         emit(ctx, 'idle-stop:session-cleared', { serverId: server.id });
         ctx.logger.info({ serverId: server.id }, 'idle-stop session cleared');
         return { success: true, serverId: server.id, message: 'session cleared' };
+      }),
+    });
+
+    ctx.registerRoute({
+      method: 'POST',
+      url: '/servers/:id/clear-ban-session',
+      preHandler: ctx.requirePermission?.('server.write'),
+      handler: writeHandler(async (request, reply) => {
+        const server = await findServer(ctx, request.params.id);
+        if (!server) return reply.status(404).send({ success: false, error: 'server not found' });
+        const overrides = await loadOverrides(ctx);
+        const settings = resolveSettings(readGlobalConfig(ctx), server, overrides.get(server.id) || {});
+        const result = { localCleared: 0, kicksCleared: false, bansCleared: false, errors: [] };
+
+        if (styleFor(settings.preset) === 'nuclear') {
+          try {
+            await sendNuclear(ctx, server, settings, 'clear-kicked-players', []);
+            result.kicksCleared = true;
+          } catch (err) {
+            result.errors.push(`clear-kicked-players: ${err.message}`);
+          }
+          try {
+            await sendNuclear(ctx, server, settings, 'banlist-clear', []);
+            result.bansCleared = true;
+          } catch (err) {
+            result.errors.push(`banlist-clear: ${err.message}`);
+          }
+        }
+
+        const existing = (await ctx.collection(BANS_COLLECTION).find({ serverId: server.id })) || [];
+        for (const record of existing) await ctx.collection(BANS_COLLECTION).delete({ _id: record._id });
+        result.localCleared = existing.length;
+
+        emit(ctx, 'idle-stop:bans-cleared', { serverId: server.id, count: result.localCleared });
+        ctx.logger.info({ serverId: server.id, ...result }, 'idle-stop kick/ban session cleared');
+        return { success: true, serverId: server.id, result };
       }),
     });
 
