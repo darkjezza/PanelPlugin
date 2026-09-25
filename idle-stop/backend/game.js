@@ -18,7 +18,15 @@ export const SteamIdRe = /^(STEAM_[0-5]:[01]:\d+|VALVE_[0-5]:[01]:\d+|\[U:1:\d+\
 export function styleFor(preset) {
   if (preset === 'minecraft-java') return 'minecraft';
   if (preset === 'source' || preset === 'goldsrc') return 'source';
+  if (preset === 'valheim') return 'valheim';
   return 'custom';
+}
+
+/** Valheim targets are a 17-digit SteamID or a player name. */
+export function normalizeValheimTarget(value) {
+  const raw = String(value ?? '').trim();
+  if (/^\d{10,20}$/.test(raw)) return raw;
+  return cleanName(raw, 32);
 }
 
 export function cleanName(name, max = 32) {
@@ -78,6 +86,16 @@ export function parsePlayers(style, output) {
       .map((name) => ({ name }));
   }
 
+  if (style === 'valheim') {
+    // ValheimRcon `players`: "<name> Steam ID:<id> Position: ... Zone: ..."
+    const players = [];
+    for (const line of text.split('\n')) {
+      const match = line.match(/^(.*?)\s*Steam ID:(\d{5,20})/i);
+      if (match && match[1].trim()) players.push({ name: match[1].trim(), steamid: match[2] });
+    }
+    return players;
+  }
+
   const players = [];
   for (const line of text.split('\n')) {
     const match = line.match(/^\s*#\s*(\d+)\s+"([^"]*)"\s+(\S+)(.*)$/);
@@ -103,6 +121,16 @@ export function parseBans(style, output) {
     }
     return bans;
   }
+  if (style === 'valheim') {
+    for (const line of text.split('\n')) {
+      const value = line.trim();
+      if (!value) continue;
+      if (/^banned/i.test(value)) continue;
+      const id = value.match(/\b(\d{17})\b/);
+      bans.push({ target: id ? id[1] : value });
+    }
+    return bans;
+  }
   for (const line of text.split('\n')) {
     const matches = line.match(/(STEAM_[0-9]:[01]:\d+|VALVE_[0-9]:[01]:\d+)/g);
     if (matches) for (const target of matches) bans.push({ target });
@@ -122,6 +150,10 @@ export function buildKick(preset, player, reason) {
     const cleaned = cleanReason(reason);
     return cleaned ? `kick ${name} ${cleaned}` : `kick ${name}`;
   }
+  if (style === 'valheim') {
+    const target = player.steamid ? normalizeValheimTarget(player.steamid) : normalizeValheimTarget(player.name);
+    return `kick ${target}`;
+  }
   throw new Error('kick is not supported for this game preset');
 }
 
@@ -136,6 +168,10 @@ export function buildBan(preset, player, minutes, reason) {
     const cleaned = cleanReason(reason);
     return cleaned ? `ban ${name} ${cleaned}` : `ban ${name}`;
   }
+  if (style === 'valheim') {
+    const target = player.steamid ? normalizeValheimTarget(player.steamid) : normalizeValheimTarget(player.name);
+    return `ban ${target}`;
+  }
   throw new Error('ban is not supported for this game preset');
 }
 
@@ -146,6 +182,7 @@ export function buildUnban(preset, target) {
     return `removeid ${normalizeSteamId(target.steamid)}`;
   }
   if (style === 'minecraft') return `pardon ${cleanName(target.name || target.target)}`;
+  if (style === 'valheim') return `unban ${normalizeValheimTarget(target.steamid || target.name || target.target)}`;
   throw new Error('unban is not supported for this game preset');
 }
 
@@ -154,6 +191,7 @@ export function buildWelcome(preset, playerName, message, serverName = '') {
   if (!text) throw new Error('welcome message is empty after sanitizing');
   const style = styleFor(preset);
   if (style === 'minecraft') return `tell ${cleanName(playerName)} ${text}`;
+  // ValheimRcon only offers server-wide chat (`say`) and `showMessage`.
   return `say ${text}`;
 }
 

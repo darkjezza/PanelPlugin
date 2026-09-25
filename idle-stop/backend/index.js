@@ -60,10 +60,13 @@ const ALLOWED_OVERRIDES = new Set([
   'playerRegex',
   'playerListCommand',
   'banListCommand',
+  'rosterJoinRegex',
+  'rosterLeaveRegex',
   'queryHost',
   'queryPort',
   'rconHost',
   'rconPort',
+  'rconPortOffset',
   'rconPassword',
   'welcomeEnabled',
   'welcomeMessage',
@@ -75,7 +78,14 @@ const ALLOWED_OVERRIDES = new Set([
   'note',
 ]);
 
-const RC_CONFIG_PATHS = ['server.properties', 'server.cfg', 'cstrike/server.cfg', 'csgo/cfg/server.cfg', 'tf/cfg/server.cfg'];
+const RC_CONFIG_PATHS = [
+  'server.properties',
+  'server.cfg',
+  'cstrike/server.cfg',
+  'csgo/cfg/server.cfg',
+  'tf/cfg/server.cfg',
+  'BepInEx/config/org.tristan.rcon.cfg', // ValheimRcon mod
+];
 // File-tunnel requests can take up to 60s each; bound discovery hard and cache
 // the result so a user-facing request never hangs into a proxy timeout.
 const RC_DISCOVERY_TTL_MS = 5 * 60 * 1000;
@@ -94,6 +104,14 @@ let disposed = false;
 const consoleSubs = new Map();
 const serverCache = new Map();
 const settingsCache = new Map();
+
+// Valheim has no query/RCON, so its roster is built from live console lines.
+// serverId -> Map(steamid -> { steamid, name, since }) and the set of servers
+// whose roster has been authoritative since their last observed start.
+const rosterCache = new Map();
+const rosterSeen = new Set();
+// One in-flight console request/response capture per server (e.g. `banned`).
+const consoleCaptures = new Map();
 
 const WELCOME_DEDUP_MS = 5 * 60 * 1000;
 
@@ -139,6 +157,8 @@ function readGlobalConfig(ctx) {
     playerRegex: get('playerRegex', ''),
     playerListCommand: get('playerListCommand', ''),
     banListCommand: get('banListCommand', ''),
+    rosterJoinRegex: get('rosterJoinRegex', ''),
+    rosterLeaveRegex: get('rosterLeaveRegex', ''),
     queryHost: get('queryHost', ''),
     queryPort: num(get('queryPort', 0), 0),
     rconHost: get('rconHost', ''),
@@ -267,48 +287,108 @@ function parsePropertiesPassword(text) {
   return null;
 }
 
-async function discoverRconPassword(ctx, server) {
+/** ValheimRcon BepInEx config: [1. Rcon] Port / Password. */
+function parseBepInExRconConfig(text) {
+  let section = '';
+  let password = null;
+  let port = null;
+  for (const rawLine of String(text || '').split('\n')) {
+    const line = rawLine.trim();
+    const header = line.match(/^\[(.+)\]$/);
+    if (header) {
+      section = header[1];
+      continue;
+    }
+    if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) continue;
+    if (section && !/rcon/i.test(section)) continue;
+    const key = line.slice(0, eq).trim().toLowerCase();
+    const value = line.slice(eq + 1).trim().replace(/^"(.*)"$/, '$1');
+    if (key === 'password' && value) password = value;
+    if (key === 'port') {
+      const n = Number(value);
+      if (Number.isInteger(n) && n > 0) port = n;
+    }
+  }
+  return { password, port };
+}
+
+/**
+ * Find the RCON password (and, for ValheimRcon, the configured port) from the
+ * server's config files. Cached and hard-bounded so it never blocks a request.
+ * Returns { password, port }.
+ */
+async function discoverRcon(ctx, server) {
   const cached = rconPasswordCache.get(server.id);
-  if (cached && Date.now() - cached.at < RC_DISCOVERY_TTL_MS) return cached.password;
+  if (cached && Date.now() - cached.at < RC_DISCOVERY_TTL_MS) return cached.value;
+  const empty = { password: null, port: null };
   if (!ctx.fileTunnel || typeof ctx.fileTunnel.queueRequest !== 'function') {
-    rconPasswordCache.set(server.id, { password: null, at: Date.now() });
-    return null;
+    rconPasswordCache.set(server.id, { value: empty, at: Date.now() });
+    return empty;
   }
 
   const scan = async () => {
+    const found = { password: null, port: null };
     for (const path of RC_CONFIG_PATHS) {
       try {
         const res = await ctx.fileTunnel.queueRequest(server.nodeId, 'download', server.uuid, path);
-        if (res?.success && res.body) {
-          const text = Buffer.isBuffer(res.body) ? res.body.toString('utf8') : String(res.body);
-          const found = path.endsWith('.properties') ? parsePropertiesPassword(text) : parseServerCfgPassword(text);
-          if (found) return found;
+        if (!res?.success || !res.body) continue;
+        const text = Buffer.isBuffer(res.body) ? res.body.toString('utf8') : String(res.body);
+        if (path.endsWith('org.tristan.rcon.cfg')) {
+          const cfg = parseBepInExRconConfig(text);
+          if (cfg.port) found.port = cfg.port;
+          if (cfg.password) {
+            found.password = cfg.password;
+            return found;
+          }
+          continue;
+        }
+        const password = path.endsWith('.properties') ? parsePropertiesPassword(text) : parseServerCfgPassword(text);
+        if (password) {
+          found.password = password;
+          return found;
         }
       } catch {
         /* try the next candidate path */
       }
     }
-    return null;
+    return found;
   };
 
-  let password = null;
+  let value = empty;
   try {
-    password = await Promise.race([
+    value = await Promise.race([
       scan(),
-      new Promise((resolve) => setTimeout(() => resolve(null), RC_DISCOVERY_TIMEOUT_MS)),
+      new Promise((resolve) => setTimeout(() => resolve(empty), RC_DISCOVERY_TIMEOUT_MS)),
     ]);
   } catch {
-    password = null;
+    value = empty;
   }
-  rconPasswordCache.set(server.id, { password, at: Date.now() });
-  return password;
+  rconPasswordCache.set(server.id, { value, at: Date.now() });
+  return value;
 }
 
 async function resolveRcon(ctx, server, settings) {
-  const { host, port } = resolveEndpoint(settings.rconHost, settings.rconPort, server);
-  if (!host || !port) throw new Error('RCON needs a reachable host and port (set rconHost/rconPort)');
-  const password = settings.rconPassword || (await discoverRconPassword(ctx, server));
-  if (!password) throw new Error('no RCON password configured or found in server.properties/server.cfg');
+  const parsed = parseHostPort(settings.rconHost);
+  const host = normalizeHost(parsed.host) || normalizeHost(server.primaryIp);
+  const configuredPort = Number(settings.rconPort) || parsed.port || 0;
+  let password = settings.rconPassword || '';
+
+  let discovered = { password: null, port: null };
+  if (!password || !configuredPort) {
+    discovered = await discoverRcon(ctx, server);
+    if (!password) password = discovered.password || '';
+  }
+
+  const offset = Number(settings.rconPortOffset) || 0;
+  const port = configuredPort || discovered.port || Number(server.primaryPort) + offset || 0;
+  if (!host || !port) {
+    throw new Error('RCON needs a reachable host and port (set rconHost/rconPort; Valheim RCON default is game port + 2)');
+  }
+  if (!password) {
+    throw new Error('no RCON password configured or found (Valheim: BepInEx/config/org.tristan.rcon.cfg)');
+  }
   return { host, port, password };
 }
 
@@ -339,6 +419,28 @@ async function countPlayers(ctx, server, settings) {
  */
 async function probePlayers(ctx, server, settings) {
   const style = styleFor(settings.preset);
+
+  if (style === 'valheim') {
+    // Prefer the ValheimRcon mod's RCON player list (names + SteamIDs).
+    try {
+      const output = await rcon(ctx, server, settings, settings.playerListCommand || 'players');
+      const players = parsePlayers('valheim', output);
+      return { mode: 'list', players, count: players.length, source: 'rcon', output: output.slice(0, 4000), listError: null, authoritative: true };
+    } catch (err) {
+      // No RCON (mod missing or disabled): fall back to the console roster.
+      const map = await ensureRosterLoaded(ctx, server.id);
+      const players = [...map.values()].map((p) => ({ steamid: p.steamid, name: p.name || null }));
+      return {
+        mode: 'list',
+        players,
+        count: players.length,
+        source: 'console',
+        output: null,
+        listError: err.message,
+        authoritative: rosterSeen.has(server.id),
+      };
+    }
+  }
 
   try {
     if (settings.playerListCommand) {
@@ -465,7 +567,7 @@ async function welcomeFromConsole(ctx, serverId, name, settings) {
 /** Handle one live console event pushed by the gateway. Must never throw. */
 function onConsoleOutput(ctx, serverId, dataJson) {
   const settings = settingsCache.get(serverId);
-  if (!settings || !settings.welcomeEnabled || !settings.welcomeConsole || !settings.welcomeJoinRegex) return;
+  if (!settings) return;
   let payload;
   try {
     payload = JSON.parse(typeof dataJson === 'string' ? dataJson : '');
@@ -474,14 +576,24 @@ function onConsoleOutput(ctx, serverId, dataJson) {
   }
   const text = payload && typeof payload.data === 'string' ? payload.data : '';
   if (!text) return;
-  let re;
-  try {
-    re = new RegExp(settings.welcomeJoinRegex);
-  } catch {
-    return;
+  const lines = text.split(/\r?\n/).filter(Boolean);
+
+  const capture = consoleCaptures.get(serverId);
+  if (capture && !capture.settled) {
+    for (const line of lines) capture.lines.push(line);
+    clearTimeout(capture.quiet);
+    capture.quiet = setTimeout(capture.finish, 1000);
   }
+
+  if (styleFor(settings.preset) === 'valheim') {
+    updateRosterFromLines(ctx, serverId, settings, lines).catch(() => {});
+  }
+
+  if (!settings.welcomeEnabled || !settings.welcomeConsole || !settings.welcomeJoinRegex) return;
+  const re = compile(settings.welcomeJoinRegex);
+  if (!re) return;
   const seen = new Set();
-  for (const line of text.split(/\r?\n/)) {
+  for (const line of lines) {
     const match = line.match(re);
     if (!match || !match[1]) continue;
     const name = String(match[1]).trim();
@@ -521,6 +633,88 @@ function clearConsoleSubs() {
   consoleSubs.clear();
   serverCache.clear();
   settingsCache.clear();
+  rosterCache.clear();
+  rosterSeen.clear();
+  for (const [, capture] of consoleCaptures) {
+    try {
+      capture.finish?.();
+    } catch {
+      /* already settled */
+    }
+  }
+  consoleCaptures.clear();
+}
+
+// ------------------------------------------------------- Valheim roster ---
+
+async function ensureRosterLoaded(ctx, serverId) {
+  if (rosterCache.has(serverId)) return rosterCache.get(serverId);
+  const state = await readState(ctx, serverId);
+  const map = new Map();
+  for (const [id, value] of Object.entries(state.roster || {})) map.set(id, value);
+  rosterCache.set(serverId, map);
+  if (state.rosterSeen) rosterSeen.add(serverId);
+  return map;
+}
+
+async function persistRoster(ctx, serverId) {
+  const map = rosterCache.get(serverId) || new Map();
+  await writeState(ctx, serverId, {
+    roster: Object.fromEntries(map),
+    rosterSeen: rosterSeen.has(serverId),
+  });
+}
+
+function compile(text) {
+  try {
+    return text ? new RegExp(text) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function updateRosterFromLines(ctx, serverId, settings, lines) {
+  const map = await ensureRosterLoaded(ctx, serverId);
+  const joinRe = compile(settings.rosterJoinRegex);
+  const leaveRe = compile(settings.rosterLeaveRegex);
+  let changed = false;
+  for (const line of lines) {
+    if (joinRe) {
+      const match = line.match(joinRe);
+      if (match && match[1]) {
+        map.set(match[1], { steamid: match[1], name: null, since: Date.now() });
+        changed = true;
+        continue;
+      }
+    }
+    if (leaveRe) {
+      const match = line.match(leaveRe);
+      if (match && match[1] && map.has(match[1])) {
+        map.delete(match[1]);
+        changed = true;
+      }
+    }
+  }
+  if (changed) await persistRoster(ctx, serverId);
+}
+
+/** Collect console lines for a short window after a command (e.g. `banned`). */
+function captureConsole(serverId, { timeoutMs = 3500, quietMs = 1000 } = {}) {
+  return new Promise((resolve) => {
+    const entry = { lines: [], settled: false };
+    const finish = () => {
+      if (entry.settled) return;
+      entry.settled = true;
+      clearTimeout(entry.quiet);
+      clearTimeout(entry.hard);
+      if (consoleCaptures.get(serverId) === entry) consoleCaptures.delete(serverId);
+      resolve(entry.lines.join('\n'));
+    };
+    entry.finish = finish;
+    entry.quiet = setTimeout(finish, quietMs);
+    entry.hard = setTimeout(finish, timeoutMs);
+    consoleCaptures.set(serverId, entry);
+  });
 }
 
 // ------------------------------------------------------------ check loop ---
@@ -596,6 +790,12 @@ async function checkServer(ctx, server, global, per, now, force) {
   }
 
   if (probe.count <= settings.emptyThreshold) {
+    if (probe.authoritative === false) {
+      // The roster is not known to be complete (Valheim before an observed
+      // start). Never stop a server on unknown data.
+      if (state.idleSince) await writeState(ctx, server.id, { idleSince: null });
+      return;
+    }
     if (!state.idleSince) {
       await writeState(ctx, server.id, { idleSince: now });
       emit(ctx, 'idle-stop:empty', { serverId: server.id, playerCount: probe.count, since: new Date(now).toISOString() });
@@ -640,7 +840,15 @@ async function tick(ctx, force = false) {
       const settings = resolveSettings(global, server, per);
       serverCache.set(server.id, server);
       settingsCache.set(server.id, settings);
-      if (canConsole && server.status === 'running' && settings.welcomeEnabled && settings.welcomeConsole && settings.welcomeJoinRegex) {
+      const wantsRoster = styleFor(settings.preset) === 'valheim';
+      if (wantsRoster) {
+        try {
+          await ensureRosterLoaded(ctx, server.id);
+        } catch {
+          /* leave the cache empty; roster is non-authoritative until start */
+        }
+      }
+      if (canConsole && server.status === 'running' && (wantsRoster || (settings.welcomeEnabled && settings.welcomeConsole && settings.welcomeJoinRegex))) {
         activeConsole.add(server.id);
         ensureConsoleSub(ctx, server.id);
       }
@@ -832,6 +1040,7 @@ export default {
             serverId: server.id,
             preset: settings.preset,
             mode: probe.mode,
+            authoritative: probe.authoritative !== false,
             source: probe.source,
             players: probe.players.map((p) => ({ name: p.name || '', userid: p.userid || null, steamid: p.steamid || null })),
             count: probe.count,
@@ -863,6 +1072,7 @@ export default {
             serverId: server.id,
             preset: settings.preset,
             mode: probe.mode,
+            authoritative: probe.authoritative !== false,
             source: probe.source,
             count: probe.count,
             players: probe.players.map((p) => ({ name: p.name || '', userid: p.userid || null, steamid: p.steamid || null })),
@@ -951,8 +1161,16 @@ export default {
         let remote = { ok: false, bans: [], error: null };
         try {
           if (settings.banListCommand) {
-            const output = await rcon(ctx, server, settings, settings.banListCommand);
-            remote = { ok: true, bans: parseBans(styleFor(settings.preset), output), error: null };
+            const style = styleFor(settings.preset);
+            if (style === 'valheim') {
+              const capture = captureConsole(server.id);
+              await sendConsoleCommand(ctx, server, settings.banListCommand);
+              const output = await capture;
+              remote = { ok: true, bans: parseBans('valheim', output), error: null, raw: output.slice(0, 2000) };
+            } else {
+              const output = await rcon(ctx, server, settings, settings.banListCommand);
+              remote = { ok: true, bans: parseBans(style, output), error: null };
+            }
           } else {
             remote = { ok: false, bans: [], error: 'no ban list command configured' };
           }
@@ -1130,12 +1348,18 @@ export default {
       if (!data?.serverId) return;
       if (data.status !== 'running' && data.status !== 'starting') return;
       try {
+        // A fresh start means the console roster is empty and now authoritative
+        // for this session (Valheim builds its player list from console lines).
+        rosterCache.set(data.serverId, new Map());
+        rosterSeen.add(data.serverId);
         await writeState(ctx, data.serverId, {
           startedAt: Date.now(),
           firstSeenRunning: Date.now(),
           idleSince: null,
           stopIssuedAt: null,
           knownPlayers: [],
+          roster: {},
+          rosterSeen: true,
         });
       } catch (err) {
         ctx.logger.debug({ err: err?.message }, 'idle-stop start event failed');
@@ -1146,7 +1370,16 @@ export default {
       if (!data?.serverId) return;
       if (data.status !== 'stopped' && data.status !== 'stopping') return;
       try {
-        await writeState(ctx, data.serverId, { startedAt: null, idleSince: null, stopIssuedAt: null, knownPlayers: [] });
+        rosterCache.set(data.serverId, new Map());
+        rosterSeen.delete(data.serverId);
+        await writeState(ctx, data.serverId, {
+          startedAt: null,
+          idleSince: null,
+          stopIssuedAt: null,
+          knownPlayers: [],
+          roster: {},
+          rosterSeen: false,
+        });
       } catch (err) {
         ctx.logger.debug({ err: err?.message }, 'idle-stop stop event failed');
       }

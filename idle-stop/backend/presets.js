@@ -37,6 +37,20 @@ export const PRESETS = {
     stopCommand: 'quit',
     welcomeJoinRegex: '"([^"]{1,64})<\\d+><[^>]*><>" entered the game',
   },
+  // Requires the ValheimRcon mod (Source-RCON over TCP). Without it the
+  // plugin falls back to the console roster below.
+  valheim: {
+    playerSource: 'rcon',
+    playerCommand: 'players',
+    playerRegex: 'Online (\\d+)',
+    playerListCommand: 'players',
+    banListCommand: 'banlist',
+    stopMethod: 'agent',
+    stopCommand: '',
+    rconPortOffset: 2,
+    rosterJoinRegex: 'Got connection SteamID (\\d+)',
+    rosterLeaveRegex: 'Closing socket (\\d+)',
+  },
   custom: {},
 };
 
@@ -69,6 +83,9 @@ export function detectPreset(server) {
 
   if (/(paper|purpur|spigot|bukkit|fabric|forge|minecraft|server\.jar|\.jar)/.test(haystack)) {
     return 'minecraft-java';
+  }
+  if (/(valheim)/.test(haystack)) {
+    return 'valheim';
   }
   if (/(srcds|cs2|csgo|counter-strike|tf2|gmod|source)/.test(haystack)) {
     return 'source';
@@ -116,10 +133,14 @@ export function resolveSettings(global, server, per = {}) {
     playerRegex: String(playerRegex || '').trim(),
     playerListCommand: String(pick('playerListCommand', '') || '').trim(),
     banListCommand: String(pick('banListCommand', '') || '').trim(),
+    rosterJoinRegex: String(pick('rosterJoinRegex', '') || ''),
+    rosterLeaveRegex: String(pick('rosterLeaveRegex', '') || ''),
     queryHost: String(pick('queryHost', '') || '').trim(),
     queryPort: Math.max(0, toNumber(pick('queryPort', 0), 0)),
     rconHost: String(pick('rconHost', '') || '').trim(),
     rconPort: Math.max(0, toNumber(pick('rconPort', 0), 0)),
+    // 0 means "no offset", so it must not shadow the preset's value.
+    rconPortOffset: Math.max(0, toNumber(firstSet(per.rconPortOffset || undefined, global.rconPortOffset || undefined, preset.rconPortOffset), 0)),
     rconPassword: String(firstSet(per.rconPassword, global.rconPassword) || ''),
     welcomeEnabled: toBool(pick('welcomeEnabled', false), false),
     welcomeMessage: String(pick('welcomeMessage', 'Welcome, {player}!') || ''),

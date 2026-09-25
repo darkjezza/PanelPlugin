@@ -281,6 +281,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
       const refresh = button('Refresh', () => refreshPlayers(), 'muted');
       body.push(el('div', { className: 'flex items-center gap-3 mb-3' }, [refresh, el('span', { className: 'text-sm text-gray-400', text: `${data.count} online via ${data.source} (${data.mode})` })]));
       if (data.listError) body.push(el('p', { className: 'text-xs text-yellow-400 mb-2', text: `List warning: ${data.listError}` }));
+      if (data.authoritative === false) body.push(el('p', { className: 'text-xs text-yellow-400 mb-2', text: 'Roster is not authoritative yet: it becomes complete the next time this server starts under the panel. Auto-stop is paused until then.' }));
 
       if (data.mode === 'list' && players.length) {
         const rows = players.map((p) => {
@@ -314,13 +315,15 @@ function mountServer(root: HTMLElement, serverId: string): void {
             }
           }, 'danger');
 
+          const primary = p.name || p.steamid || (p.userid ? `#${p.userid}` : 'unknown');
+          const detail = p.name ? (p.steamid || (p.userid ? `#${p.userid}` : '—')) : (p.userid ? `#${p.userid}` : '—');
           return el('tr', { className: 'border-t border-gray-700' }, [
-            el('td', { className: 'px-3 py-2 text-sm', text: p.name || '—' }),
-            el('td', { className: 'px-3 py-2 text-xs font-mono text-gray-400', text: p.steamid || (p.userid ? `#${p.userid}` : '—') }),
+            el('td', { className: 'px-3 py-2 text-sm', text: primary }),
+            el('td', { className: 'px-3 py-2 text-xs font-mono text-gray-400', text: detail }),
             el('td', { className: 'px-3 py-2 text-right space-x-2' }, [kick, ban]),
           ]);
         });
-        body.push(table(['Name', 'SteamID', ''], rows));
+        body.push(table(['Player', 'ID', ''], rows));
       } else {
         body.push(el('p', { className: 'text-sm text-gray-400', text: `${data.count} player(s) online. Player names are unavailable for this preset/source; only counts are shown.` }));
       }
@@ -421,7 +424,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
     const threshold = inputEl({ type: 'number', min: '0', value: String(st.emptyThreshold ?? 0) });
     const uptime = inputEl({ type: 'number', min: '0', value: String(st.minServerUptimeSeconds ?? 180) });
     const interval = inputEl({ type: 'number', min: '15', value: String(st.checkIntervalSeconds ?? 30) });
-    const preset = selectEl(['auto', 'minecraft-java', 'source', 'goldsrc', 'custom'], st.preset || 'auto');
+    const preset = selectEl(['auto', 'minecraft-java', 'source', 'goldsrc', 'valheim', 'custom'], st.preset || 'auto');
     const stopMethod = selectEl(['console', 'agent'], st.stopMethod || 'console');
     const stopCommand = inputEl({ type: 'text', value: st.stopCommand || '' });
     const playerSource = selectEl(['auto', 'a2s', 'rcon'], st.playerSource || 'auto');
@@ -431,6 +434,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
     const queryPort = inputEl({ type: 'number', min: '0', value: String(st.queryPort ?? 0) });
     const rconHost = inputEl({ type: 'text', value: st.rconHost || '' });
     const rconPort = inputEl({ type: 'number', min: '0', value: String(st.rconPort ?? 0) });
+    const rconPortOffset = inputEl({ type: 'number', min: '0', value: String(st.rconPortOffset ?? 0) });
     const rconPassword = inputEl({ type: 'password', placeholder: st.rconPasswordSet ? '(unchanged)' : '' });
     const welcomeEnabled = inputEl({ type: 'checkbox' }) as HTMLInputElement;
     welcomeEnabled.checked = Boolean(st.welcomeEnabled);
@@ -459,6 +463,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
       field('Query port (A2S)', queryPort),
       field('RCON host', rconHost),
       field('RCON port', rconPort),
+      field('RCON port offset', rconPortOffset),
       field('RCON password', rconPassword),
       field('Welcome players (on join)', welcomeEnabled),
       field('Welcome message', welcomeMessage),
@@ -489,6 +494,7 @@ function mountServer(root: HTMLElement, serverId: string): void {
           queryPort: Number(queryPort.value),
           rconHost: rconHost.value,
           rconPort: Number(rconPort.value),
+          rconPortOffset: Number(rconPortOffset.value),
           welcomeEnabled: welcomeEnabled.checked,
           welcomeMessage: welcomeMessage.value,
           welcomeOnExisting: welcomeOnExisting.checked,
@@ -574,7 +580,7 @@ function IdleStopTab(props: { serverId?: string }): React.ReactElement {
 export default {
   manifest: {
     name: 'idle-stop',
-    version: '1.3.1',
+    version: '1.5.0',
     displayName: 'Idle Stop & Player Admin',
     description: 'Auto-stop empty servers, plus player list, kick, ban, ban list and welcome messages.',
     author: 'SpiritNetworks',

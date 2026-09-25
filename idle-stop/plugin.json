@@ -1,6 +1,6 @@
 {
   "name": "idle-stop",
-  "version": "1.3.1",
+  "version": "1.5.0",
   "displayName": "Idle Stop & Player Admin",
   "description": "Stops a game server automatically once the last player leaves, and adds player administration: live player list, kick, ban, ban list, a nuclear reset, and a welcome message. Player data comes from an A2S query (Source/GoldSrc) or Source-RCON output (Minecraft and custom games).",
   "author": "SpiritNetworks",
@@ -37,7 +37,7 @@
       "type": "select",
       "default": "auto",
       "description": "Default behavior for games not detected automatically.",
-      "options": ["auto", "minecraft-java", "source", "goldsrc", "custom"]
+      "options": ["auto", "minecraft-java", "source", "goldsrc", "valheim", "custom"]
     },
     "graceSeconds": {
       "type": "number",
@@ -99,7 +99,17 @@
     "banListCommand": {
       "type": "string",
       "default": "",
-      "description": "RCON command whose output lists bans (Source: listid, Minecraft: banlist)."
+      "description": "RCON command whose output lists bans (Source: listid, Minecraft/ValheimRcon: banlist)."
+    },
+    "rosterJoinRegex": {
+      "type": "string",
+      "default": "",
+      "description": "Valheim only: console line pattern for a join; capture group 1 is the SteamID. Empty uses the preset (Got connection SteamID)."
+    },
+    "rosterLeaveRegex": {
+      "type": "string",
+      "default": "",
+      "description": "Valheim only: console line pattern for a leave; capture group 1 is the SteamID. Empty uses the preset (Closing socket)."
     },
     "queryHost": {
       "type": "string",
@@ -119,7 +129,7 @@
     "rconPort": {
       "type": "number",
       "default": 0,
-      "description": "RCON port. 0 uses the server's primary port."
+      "description": "RCON port. 0 uses the server's primary port (ValheimRcon defaults to game port + 2)."
     },
     "rconPassword": {
       "type": "password",
