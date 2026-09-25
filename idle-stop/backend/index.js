@@ -149,6 +149,8 @@ const rosterSeen = new Set();
 const consoleCaptures = new Map();
 // Live diagnostics surfaced through GET /servers/:id (in-memory only).
 const runtimeInfo = new Map();
+// Last good Nuclear Option player list, reused while get-player-list is flaky.
+const nuclearListCache = new Map();
 
 function touchRuntime(serverId, patch) {
   runtimeInfo.set(serverId, { ...(runtimeInfo.get(serverId) || {}), ...patch });
@@ -572,15 +574,34 @@ async function probePlayers(ctx, server, settings) {
   }
 
   if (style === 'nuclear') {
-    try {
-      const { host, port } = nuclearEndpoint(server, settings);
-      if (!host || !port) throw new Error('Nuclear Option remote commands need a reachable host and port (set rconHost/rconPort; default 7779)');
-      const res = await noCommand({ host, port, name: 'get-player-list', args: [], timeoutMs: 15000, requireResponse: true });
-      const list = res.body && Array.isArray(res.body.Players) ? res.body.Players : [];
-      let players = list
-        .map((p) => ({ steamid: String(p.steamId || '').trim(), name: String(p.steamId || '').trim(), faction: p.faction || null }))
-        .filter((p) => p.steamid);
-      // The headless server only reports SteamIDs; look up persona names.
+    const { host, port } = nuclearEndpoint(server, settings);
+    if (!host || !port) {
+      return {
+        mode: 'count',
+        players: [],
+        count: 0,
+        source: 'nuclear',
+        output: null,
+        listError: 'Nuclear Option remote commands need a reachable host and port (set rconHost/rconPort; default 7779)',
+      };
+    }
+    // get-player-list is flaky on some builds: retry, then reuse the last good
+    // list, then fall back to the A2S query count.
+    let players = null;
+    let listErr = null;
+    for (let attempt = 0; attempt < 2 && players === null; attempt += 1) {
+      try {
+        const res = await noCommand({ host, port, name: 'get-player-list', args: [], timeoutMs: 8000, requireResponse: true });
+        const list = res.body && Array.isArray(res.body.Players) ? res.body.Players : [];
+        players = list
+          .map((p) => ({ steamid: String(p.steamId || '').trim(), name: String(p.steamId || '').trim(), faction: p.faction || null }))
+          .filter((p) => p.steamid);
+      } catch (err) {
+        listErr = err?.message || String(err);
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    }
+    if (players !== null) {
       if (settings.steamApiKey && players.length) {
         try {
           const names = await resolveSteamNames(players.map((p) => p.steamid), settings.steamApiKey);
@@ -589,18 +610,21 @@ async function probePlayers(ctx, server, settings) {
           /* keep SteamIDs */
         }
       }
+      nuclearListCache.set(server.id, { players, at: Date.now() });
       return { mode: 'list', players, count: players.length, source: 'nuclear', output: null, listError: null };
-    } catch (err) {
-      // get-player-list can be unavailable; fall back to the A2S query count.
-      let count = 0;
-      try {
-        const { host, port } = resolveEndpoint(settings.queryHost, settings.queryPort, server);
-        if (host && port) count = (await a2sPlayerCount({ host, port })).players;
-      } catch {
-        /* ignore */
-      }
-      return { mode: 'count', players: [], count, source: 'a2s', output: null, listError: err?.message || String(err) };
     }
+    const cached = nuclearListCache.get(server.id);
+    if (cached && Date.now() - cached.at < 120000) {
+      return { mode: 'list', players: cached.players, count: cached.players.length, source: 'nuclear', output: null, listError: `using last known list (${listErr})` };
+    }
+    let count = 0;
+    try {
+      const q = resolveEndpoint(settings.queryHost, settings.queryPort, server);
+      if (q.host && q.port) count = (await a2sPlayerCount({ host: q.host, port: q.port })).players;
+    } catch {
+      /* ignore */
+    }
+    return { mode: 'count', players: [], count, source: 'a2s', output: null, listError: listErr };
   }
 
   if (style === 'valheim') {
@@ -726,7 +750,10 @@ async function sendNuclear(ctx, server, settings, name, args = []) {
   if (!host || !port) {
     throw new Error('Nuclear Option remote commands need a reachable host and port (set rconHost/rconPort; default 7779)');
   }
-  const res = await noCommand({ host, port, name, args, timeoutMs: 15000 });
+  // Require a response: if the game's remote-command listener is down, `socat`
+  // accepts the TCP connection and closes it, which must be an error, not a
+  // silent "delivered".
+  const res = await noCommand({ host, port, name, args, timeoutMs: 15000, requireResponse: true });
   return res.raw || `ok(${res.status})`;
 }
 
